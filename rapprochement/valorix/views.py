@@ -8,7 +8,7 @@ from rest_framework import generics, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
-from core.enums import TypeTransactionCaisse
+from .models import TypeTransactionCaisse
 
 from .models import TransactionValorix
 from .serializers import ImportValorixSerializer,TransactionValorixSerializer
@@ -139,6 +139,7 @@ class ImportValorixView(generics.GenericAPIView):
                 )
             
             if save:
+                #TODO: ajouter les transactions au status non matcher a la table valorix late
                 with transaction.atomic():
                     TransactionValorix.objects.bulk_create(transactions, batch_size=500)
 
