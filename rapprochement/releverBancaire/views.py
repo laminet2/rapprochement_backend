@@ -336,47 +336,37 @@ class ExtraireRelevePDFView(APIView):
 class ImportTransactionsJSONView(APIView):
     parser_classes = [JSONParser]
 
-    def post(self, request, compte_id, *args, **kwargs):
+    def post(self, request, *args, **kwargs):
 
-        # 1. Vérifier que le compte bancaire existe.
-        try:
-            compte = CompteBancaire.objects.get(id=compte_id)
-        except CompteBancaire.DoesNotExist:
-            return Response(
-                {"error": "Compte bancaire introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+       
 
         # 2. Accepter un objet JSON contenant "transactions".
+        
         donnees = request.data
 
-        if not isinstance(donnees, dict):
+        if isinstance(donnees, dict):
+            donnees = donnees.get("transactions")
+
+        if not isinstance(donnees, list):
             return Response(
                 {
-                    "error": (
-                        "Le JSON doit être un objet contenant "
-                        "la clé 'transactions'."
+                    "detail": (
+                        "Le JSON doit être une liste de transactions "
+                        "ou un objet contenant la clé 'transactions'."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        lignes = donnees.get("transactions")
-
-        if not isinstance(lignes, list) or not lignes:
+        if not donnees:
             return Response(
-                {
-                    "error": (
-                        "La clé 'transactions' doit contenir "
-                        "une liste non vide."
-                    )
-                },
+                {"detail": "Aucune transaction à enregistrer."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         # 3. Valider toutes les transactions avant toute insertion.
         serializer = ImportTransactionsJSONSerializer(
-            data=lignes,
+            data=donnees,
             many=True,
         )
         serializer.is_valid(raise_exception=True)
@@ -385,9 +375,12 @@ class ImportTransactionsJSONView(APIView):
 
         # 4. Construire les objets Django.
         for ligne in serializer.validated_data:
+            
+            
+
             transactions.append(
                 TransactionBancaire(
-                    compte=compte,
+                    compte=ligne["compte"],
                     date_transaction=ligne["date_transaction"],
                     date_valeur=ligne.get("date_valeur"),
                     reference_rapprochement=(

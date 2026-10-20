@@ -40,3 +40,5 @@ class TransactionValorix(models.Model):
     )
 
     references_rapprochement=models.CharField(null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)

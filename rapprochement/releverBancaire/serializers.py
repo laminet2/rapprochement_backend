@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import TransactionBancaire,TypeTransactionBancaire
+from .models import TransactionBancaire,TypeTransactionBancaire,CompteBancaire
+
 
 class TransactionBancaireSerializer(serializers.ModelSerializer):
     
@@ -24,7 +25,7 @@ class ImportTransactionsJSONSerializer(serializers.Serializer):
         default=None,
     )
 
-    numero_compte_ou_cheque = serializers.CharField(
+    reference_rapprochement = serializers.CharField(
         required=False,
         allow_null=True,
         allow_blank=True,
@@ -56,6 +57,15 @@ class ImportTransactionsJSONSerializer(serializers.Serializer):
         allow_null=True,
         default=None,
     )
+    
+    compte= serializers.PrimaryKeyRelatedField(
+            queryset=CompteBancaire.objects.all(),
+            required=False,
+            allow_null=True,
+            default=None
+    )
+    
+
 
     type_transaction = serializers.ChoiceField(
         choices=TypeTransactionBancaire.choices,

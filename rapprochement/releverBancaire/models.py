@@ -101,3 +101,4 @@ class TransactionBancaire(models.Model):
             choices=TypeTransactionBancaire.choices,
             default=TypeTransactionBancaire.AUTRE,
         )
+    created_at = models.DateTimeField(auto_now_add=True)
