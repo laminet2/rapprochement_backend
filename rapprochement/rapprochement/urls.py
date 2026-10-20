@@ -21,5 +21,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('valorix/',include("valorix.urls")),
     path("rbc/",include("releverBancaire.urls")),
-    path("rapprochement/",include("core.urls")),
+    path("rapprochements/",include("core.urls")),
 ]

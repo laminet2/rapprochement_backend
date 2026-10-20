@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
+import pdfplumber
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -12,7 +14,7 @@ from pydantic import BaseModel, Field
 from django.db import transaction
 
 from rest_framework import status, viewsets
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser,JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -25,7 +27,7 @@ from .models import (
     CompteBancaire,
     TypeTransactionBancaire,
 )
-from .serializers import TransactionBancaireSerializer
+from .serializers import TransactionBancaireSerializer,ImportTransactionsJSONSerializer
 from pathlib import Path
 
 load_dotenv()
@@ -125,33 +127,56 @@ class TransactionBancaireViewSet(viewsets.ModelViewSet):
 # ============================================================
 # EXTRACTION DU PDF
 # ============================================================
+logger = logging.getLogger(__name__)
+
 
 class ExtraireRelevePDFView(APIView):
-    """
-    Reçoit un PDF, l'envoie à OpenAI Files API,
-    puis demande à LangChain d'extraire les transactions.
-
-    Le PDF n'est pas parsé localement et aucun encodage
-    base64 manuel n'est effectué dans cette vue.
-    """
-
     parser_classes = [MultiPartParser, FormParser]
-
     MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 
+    # 2 à 3 pages entières par bloc = équilibre parfait entre
+    # intégrité des données, vitesse et respect des limites de sortie JSON.
+    PAGES_PER_CHUNK = 2
 
     prompt_path = Path(__file__).resolve().parent / "prompt.txt"
-
     with open(prompt_path, "r", encoding="utf-8") as f:
         SYSTEM_PROMPT = f.read()
-        
+
+    @classmethod
+    def split_by_exact_pages(cls, pages, max_pages_per_chunk=2):
+        """Regroupe des PAGES ENTIÈRES sans jamais couper une ligne."""
+        chunks = []
+        current_chunk = []
+
+        for page_number, page_text in pages:
+            current_chunk.append(f"--- PAGE {page_number} ---\n{page_text}")
+
+            if len(current_chunk) == max_pages_per_chunk:
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = []
+
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+
+        return chunks
+
+    def process_chunk(self, structured_llm, index, total_chunks, chunk_text):
+        """Traite un groupe de pages entières en un seul appel LLM."""
+        messages = [
+            SystemMessage(content=self.SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f"Bloc {index}/{total_chunks} du relevé bancaire (Pages entières).\n"
+                    "Extrais toutes les transactions présentes dans ce bloc.\n\n"
+                    f"{chunk_text}"
+                )
+            ),
+        ]
+        result = structured_llm.invoke(messages)
+        return result.transactions
 
     def post(self, request, compte_id, format=None):
-
-        # --------------------------------------------------------
         # 1. Vérifier le compte
-        # --------------------------------------------------------
-
         try:
             compte = CompteBancaire.objects.get(id=compte_id)
         except CompteBancaire.DoesNotExist:
@@ -160,15 +185,11 @@ class ExtraireRelevePDFView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # --------------------------------------------------------
-        # 2. Récupérer le fichier
-        # --------------------------------------------------------
-
-        pdf_file = request.FILES.get("file")
-
+        # 2. Vérifier le fichier
+        pdf_file = request.FILES.get("fichier")
         if not pdf_file:
             return Response(
-                {"error": "Fichier PDF manquant (clé 'file')."},
+                {"error": "Fichier PDF manquant (clé 'fichier')."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -178,53 +199,38 @@ class ExtraireRelevePDFView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if pdf_file.size == 0:
+        if pdf_file.size == 0 or pdf_file.size > self.MAX_PDF_SIZE:
             return Response(
-                {"error": "Le fichier PDF est vide."},
+                {"error": "Fichier PDF invalide ou supérieur à 50 MB."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        if pdf_file.size > self.MAX_PDF_SIZE:
-            return Response(
-                {"error": "Le PDF dépasse la limite de 50 MB."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        uploaded_file_id = None
-        client = None
 
         try:
-            # ----------------------------------------------------
-            # 3. Envoyer le fichier binaire à OpenAI
-            # ----------------------------------------------------
-
-            client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"),
-                timeout=120.0,
-                max_retries=2,
-            )
-
+            # 3. Extraction locale page par page
             pdf_file.seek(0)
+            with pdfplumber.open(pdf_file) as pdf:
+                pages = [
+                    (num, page.extract_text() or "")
+                    for num, page in enumerate(pdf.pages, start=1)
+                ]
 
-            uploaded_file = client.files.create(
-                file=(
-                    pdf_file.name,
-                    pdf_file,
-                    "application/pdf",
-                ),
-                purpose="user_data",
-            )
+            # Conserver uniquement les pages non vides
+            pages = [(num, text.strip()) for num, text in pages if text.strip()]
 
-            uploaded_file_id = uploaded_file.id
+            if not pages:
+                return Response(
+                    {"error": "Aucun texte détecté dans le PDF (document scanné ?)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-            # ----------------------------------------------------
-            # 4. Configurer LangChain
-            # ----------------------------------------------------
+            # 4. Regroupement par PAGES ENTIÈRES
+            chunks = self.split_by_exact_pages(pages, max_pages_per_chunk=self.PAGES_PER_CHUNK)
 
+            # 5. Configuration de ChatOpenAI
             llm = ChatOpenAI(
                 model=os.getenv("OPENAI_MODEL", "gpt-4o"),
                 temperature=0,
-                use_responses_api=True,
+                max_tokens=16384,
                 timeout=120,
                 max_retries=2,
             )
@@ -234,89 +240,52 @@ class ExtraireRelevePDFView(APIView):
                 method="json_schema",
             )
 
-            # ----------------------------------------------------
-            # 5. Construire le message avec l'identifiant du PDF
-            # ----------------------------------------------------
+            # 6. Extraction parallélisée des blocs de pages
+            lignes_extraites = []
+            max_workers = min(6, len(chunks))
 
-            messages = [
-                SystemMessage(content=self.SYSTEM_PROMPT),
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": (
-                                "Analyse ce relevé bancaire PDF. "
-                                "Extrais toutes les transactions "
-                                "et retourne le résultat structuré."
-                            ),
-                        },
-                        {
-                            "type": "file",
-                            "file_id": uploaded_file_id,
-                        },
-                    ]
-                ),
-            ]
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        self.process_chunk,
+                        structured_llm,
+                        idx,
+                        len(chunks),
+                        chunk,
+                    )
+                    for idx, chunk in enumerate(chunks, start=1)
+                ]
+                for future in futures:
+                    lignes_extraites.extend(future.result())
 
-            # ----------------------------------------------------
-            # 6. Appeler le modèle
-            # ----------------------------------------------------
-
-            resultat: ReleveBancaireSchema = structured_llm.invoke(
-                messages
-            )
-
-            # ----------------------------------------------------
-            # 7. Convertir les résultats en objets Django
-            # ----------------------------------------------------
-
+            # 7. Conversion en objets Django
             transactions = []
-
-            for ligne in resultat.transactions:
-
+            for ligne in lignes_extraites:
                 date_tx = datetime.strptime(
-                    ligne.date_transaction,
-                    "%Y-%m-%d",
+                    ligne.date_transaction, "%Y-%m-%d"
                 ).date()
 
                 date_val = (
-                    datetime.strptime(
-                        ligne.date_valeur,
-                        "%Y-%m-%d",
-                    ).date()
+                    datetime.strptime(ligne.date_valeur, "%Y-%m-%d").date()
                     if ligne.date_valeur
                     else None
                 )
 
-                debit = (
-                    Decimal(str(ligne.debit))
-                    if ligne.debit is not None
-                    else None
-                )
-
-                credit = (
-                    Decimal(str(ligne.credit))
-                    if ligne.credit is not None
-                    else None
-                )
-
+                debit = Decimal(str(ligne.debit)) if ligne.debit is not None else None
+                credit = Decimal(str(ligne.credit)) if ligne.credit is not None else None
                 solde = (
                     Decimal(str(ligne.solde_apres_operation))
                     if ligne.solde_apres_operation is not None
                     else None
                 )
 
-                # Contrôle des montants avant création
                 if debit is not None and debit < 0:
                     raise ValueError("Un montant de débit est négatif.")
-
                 if credit is not None and credit < 0:
                     raise ValueError("Un montant de crédit est négatif.")
-
                 if debit is not None and credit is not None:
                     raise ValueError(
-                        "Une transaction ne peut pas avoir "
-                        "simultanément un débit et un crédit."
+                        "Une transaction ne peut pas avoir simultanément un débit et un crédit."
                     )
 
                 transactions.append(
@@ -333,38 +302,21 @@ class ExtraireRelevePDFView(APIView):
                     )
                 )
 
-            # ----------------------------------------------------
-            # 8. Sauvegarde optionnelle
-            # ----------------------------------------------------
-
+            # 8. Sauvegarde
             save_value = request.data.get("save", False)
-
-            should_save = (
-                str(save_value).strip().lower()
-                in {"true", "1", "yes", "oui"}
-            )
+            should_save = str(save_value).strip().lower() in {"true", "1", "yes", "oui"}
 
             if should_save:
                 with transaction.atomic():
                     TransactionBancaire.objects.bulk_create(
-                        transactions,
-                        batch_size=500,
+                        transactions, batch_size=500
                     )
 
-            # ----------------------------------------------------
-            # 9. Retourner les données
-            # ----------------------------------------------------
-
-            serializer = TransactionBancaireSerializer(
-                transactions,
-                many=True,
-            )
-
+            # 9. Réponse JSON
+            serializer = TransactionBancaireSerializer(transactions, many=True)
             return Response(
                 {
-                    "message": (
-                        f"{len(transactions)} transactions extraites."
-                    ),
+                    "message": f"{len(transactions)} transactions extraites avec succès.",
                     "count": len(transactions),
                     "saved": should_save,
                     "data": serializer.data,
@@ -372,31 +324,111 @@ class ExtraireRelevePDFView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        except Exception:
-            logger.exception(
-                "Erreur lors de l'extraction du relevé bancaire."
-            )
-
+        except Exception as e:
+            logger.exception("Erreur lors de l'extraction du relevé bancaire.")
             return Response(
                 {
-                    "error": (
-                        "Une erreur est survenue pendant "
-                        "le traitement du relevé bancaire."
-                    )
+                    "error": f"Une erreur est survenue pendant le traitement du relevé bancaire: {e}"
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        finally:
-            # ----------------------------------------------------
-            # 10. Nettoyage du fichier temporaire côté OpenAI
-            # ----------------------------------------------------
+class ImportTransactionsJSONView(APIView):
+    parser_classes = [JSONParser]
 
-            if client is not None and uploaded_file_id is not None:
-                try:
-                    client.files.delete(uploaded_file_id)
-                except Exception:
-                    logger.warning(
-                        "Impossible de supprimer le fichier OpenAI %s",
-                        uploaded_file_id,
+    def post(self, request, compte_id, *args, **kwargs):
+
+        # 1. Vérifier que le compte bancaire existe.
+        try:
+            compte = CompteBancaire.objects.get(id=compte_id)
+        except CompteBancaire.DoesNotExist:
+            return Response(
+                {"error": "Compte bancaire introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 2. Accepter un objet JSON contenant "transactions".
+        donnees = request.data
+
+        if not isinstance(donnees, dict):
+            return Response(
+                {
+                    "error": (
+                        "Le JSON doit être un objet contenant "
+                        "la clé 'transactions'."
                     )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lignes = donnees.get("transactions")
+
+        if not isinstance(lignes, list) or not lignes:
+            return Response(
+                {
+                    "error": (
+                        "La clé 'transactions' doit contenir "
+                        "une liste non vide."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3. Valider toutes les transactions avant toute insertion.
+        serializer = ImportTransactionsJSONSerializer(
+            data=lignes,
+            many=True,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        transactions = []
+
+        # 4. Construire les objets Django.
+        for ligne in serializer.validated_data:
+            transactions.append(
+                TransactionBancaire(
+                    compte=compte,
+                    date_transaction=ligne["date_transaction"],
+                    date_valeur=ligne.get("date_valeur"),
+                    reference_rapprochement=(
+                        ligne.get("numero_compte_ou_cheque")
+                    ),
+                    libelle_brut=ligne["libelle_brut"],
+                    debit=ligne.get("debit"),
+                    credit=ligne.get("credit"),
+                    solde_apres_operation=ligne.get(
+                        "solde_apres_operation"
+                    ),
+                    type_transaction=ligne.get(
+                        "type_transaction",
+                        TypeTransactionBancaire.AUTRE,
+                    ),
+                )
+            )
+
+        # 5. Enregistrer toutes les transactions en une opération atomique.
+        try:
+            with transaction.atomic():
+                TransactionBancaire.objects.bulk_create(
+                    transactions,
+                    batch_size=500,
+                )
+
+        except Exception:
+            logger.exception(
+                "Erreur lors de l'importation JSON du relevé bancaire."
+            )
+            return Response(
+                {
+                    "error": (
+                        "Impossible d'enregistrer les transactions."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 6. Retourner uniquement un message de confirmation.
+        return Response(
+            {"message": "Transactions bien enregistrées."},
+            status=status.HTTP_201_CREATED,
+        )

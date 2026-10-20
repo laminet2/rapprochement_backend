@@ -14,10 +14,13 @@ from rest_framework import generics, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
+from rest_framework.views import APIView
+
 from .models import TypeTransactionCaisse, TransactionValorix
 from .serializers import (
     ImportValorixSerializer,
     TransactionValorixSerializer,
+    TransactionValorixJSONSerializer
 )
 
 
@@ -434,6 +437,93 @@ class ImportValorixView(generics.GenericAPIView):
         finally:
             workbook.close()
 
+
+
+class ImportValorixJSONView(APIView):
+    
+    
+
+    def post(self, request, *args, **kwargs):
+        # Accepte soit une liste JSON, soit un objet contenant
+        # une clé "transactions".
+        donnees = request.data
+
+        if isinstance(donnees, dict):
+            donnees = donnees.get("transactions")
+
+        if not isinstance(donnees, list):
+            return Response(
+                {
+                    "detail": (
+                        "Le JSON doit être une liste de transactions "
+                        "ou un objet contenant la clé 'transactions'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not donnees:
+            return Response(
+                {"detail": "Aucune transaction à enregistrer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = TransactionValorixJSONSerializer(
+            data=donnees,
+            many=True,
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        transactions = []
+
+        for item in serializer.validated_data:
+            transaction_data = dict(item)
+
+            # Si l'identifiant est fourni, on le conserve.
+            # Sinon, on génère un UUID.
+            transaction_id = transaction_data.pop(
+                "id",
+                uuid.uuid4(),
+            )
+
+            transactions.append(
+                TransactionValorix(
+                    id=transaction_id,
+                    **transaction_data,
+                )
+            )
+
+        try:
+            with transaction.atomic():
+                TransactionValorix.objects.bulk_create(
+                    transactions,
+                    batch_size=500,
+                )
+
+        except Exception as erreur:
+            # Les détails techniques sont conservés dans les logs,
+            # mais pas exposés au client.
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Erreur lors de l'importation JSON Valorix."
+            )
+
+            return Response(
+                {
+                    "detail": (
+                        "Impossible d'enregistrer les transactions. "
+                        "Vérifiez les identifiants et les données envoyées."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"message": "Transactions bien enregistrées."},
+            status=status.HTTP_201_CREATED,
+        )
 
 class TransactionListView(generics.ListAPIView):
     queryset = TransactionValorix.objects.all().order_by(

@@ -17,3 +17,40 @@ class ImportValorixSerializer(serializers.Serializer):
                 "Seuls les fichiers excels sont acceptés."
             )
         return fichier    
+
+class TransactionValorixJSONSerializer(serializers.Serializer):
+    
+    numero_transaction = serializers.CharField(max_length=255)
+    date_transaction = serializers.DateTimeField()
+    numero_compte = serializers.CharField(
+        max_length=255,
+        allow_blank=True,
+        required=False,
+        default="",
+    )
+    nomComplet = serializers.CharField(
+        max_length=255,
+        allow_blank=True,
+        required=False,
+        default="",
+    )
+    debit = serializers.DecimalField(
+        max_digits=20,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    credit = serializers.DecimalField(
+        max_digits=20,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    references = serializers.CharField(
+        allow_blank=True,
+        required=False,
+        default="",
+    )
+    types = serializers.CharField(max_length=100)

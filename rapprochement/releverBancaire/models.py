@@ -6,13 +6,20 @@ from django.db import models
 
 class TypeTransactionBancaire(models.TextChoices):
     RETRAIT_CHEQUE = "RETRAIT_CHEQUE", "Retrait par chèque"
-    VERSEMENT_ESPECES = "VERSEMENT_ESPECES", "Versement d'espèces"
-    DEPOT_BANKCOLLECT = "DEPOT_BANKCOLLECT", "Dépôt BankCollect"
     COMPENSATION_CHEQUE = "COMPENSATION_CHEQUE", "Compensation de chèque"
+    DEPOT_CHEQUE = "DEPOT_CHEQUE", "Dépôt de chèque"
+
+    DEPOT_BANKCOLLECT = "DEPOT_BANKCOLLECT", "Dépôt BankCollect"
+    VERSEMENT_ESPECES = "VERSEMENT_ESPECES", "Versement d'espèces"
+
     TRANSFERT_RECU = "TRANSFERT_RECU", "Transfert reçu"
     TRANSFERT_MOBILE = "TRANSFERT_MOBILE", "Transfert mobile"
     TRANSFERT_INTERNE = "TRANSFERT_INTERNE", "Transfert interne"
+    TRANSFERT_EMIS = "TRANSFERT_EMIS", "Transfert émis"
+
     PAIEMENT_DIVIDENDES = "PAIEMENT_DIVIDENDES", "Paiement de dividendes"
+    SOUSCRIPTION_TITRES = "SOUSCRIPTION_TITRES", "Souscription / Achat de titres"
+
     FRAIS_BANCAIRES = "FRAIS_BANCAIRES", "Frais bancaires"
     AUTRE = "AUTRE", "Autre"
 
