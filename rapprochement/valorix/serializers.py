@@ -14,7 +14,6 @@ class ImportValorixSerializer(serializers.Serializer):
     def validate_fichier(self, fichier):
         if not fichier.name.lower().endswith(".xlsx"):
             raise serializers.ValidationError(
-                "Le fichier doit être au format .xlsx."
+                "Seuls les fichiers excels sont acceptés."
             )
-
         return fichier    
