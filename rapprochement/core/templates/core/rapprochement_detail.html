@@ -1,0 +1,205 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <h1>Détail du rapprochement</h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="card mb-4">
+        <div class="card-body">
+            <p>
+                <strong>Identifiant :</strong>
+                {{ rapprochement.id }}
+            </p>
+
+            <p>
+                <strong>Statut :</strong>
+                {{ rapprochement.get_statut_validation_display }}
+            </p>
+
+            <p>
+                <strong>Résultat :</strong>
+                {{ rapprochement.get_resultat_display|default:"Non défini" }}
+            </p>
+
+            <p>
+                <strong>Score :</strong>
+                {{ rapprochement.score_correspondance }}/100
+            </p>
+
+            <p>
+                <strong>Écart de montant :</strong>
+                {{ rapprochement.ecart_montant|default:"Non calculé" }}
+            </p>
+
+            <p>
+                <strong>Règle :</strong>
+                {{ rapprochement.regle|default:"Aucune règle associée" }}
+            </p>
+
+            <p>
+                <strong>Commentaire / historique :</strong><br>
+                {{ rapprochement.commentaire|default:"Aucun commentaire"|linebreaksbr }}
+            </p>
+
+            <p>
+                <strong>Créé le :</strong>
+                {{ rapprochement.cree_le|date:"d/m/Y H:i" }}
+            </p>
+        </div>
+    </div>
+
+    <h2>Transactions bancaires</h2>
+
+    {% for lien in rapprochement.transactions_bancaires.all %}
+        <div class="card mb-2">
+            <div class="card-body">
+                <p>
+                    <strong>Banque :</strong>
+                    {{ lien.transaction.compte.banque.nom }}
+                </p>
+                <p>
+                    <strong>Compte :</strong>
+                    {{ lien.transaction.compte.numero_compte }}
+                </p>
+                <p>
+                    <strong>Date :</strong>
+                    {{ lien.transaction.date_transaction|date:"d/m/Y" }}
+                </p>
+                <p>
+                    <strong>Libellé :</strong>
+                    {{ lien.transaction.libelle_brut }}
+                </p>
+                <p>
+                    <strong>Débit :</strong>
+                    {{ lien.transaction.debit|default_if_none:"—" }}
+                </p>
+                <p>
+                    <strong>Crédit :</strong>
+                    {{ lien.transaction.credit|default_if_none:"—" }}
+                </p>
+                <p>
+                    <strong>Référence :</strong>
+                    {{ lien.transaction.reference_rapprochement|default:"—" }}
+                </p>
+            </div>
+        </div>
+    {% empty %}
+        <p>Aucune transaction bancaire liée.</p>
+    {% endfor %}
+
+    <h2>Transactions Valorix</h2>
+
+    {% for lien in rapprochement.transactions_valorix.all %}
+        <div class="card mb-2">
+            <div class="card-body">
+                <p>
+                    <strong>N° transaction :</strong>
+                    {{ lien.transaction.numero_transaction }}
+                </p>
+                <p>
+                    <strong>Date :</strong>
+                    {{ lien.transaction.date_transaction|date:"d/m/Y H:i" }}
+                </p>
+                <p>
+                    <strong>Client :</strong>
+                    {{ lien.transaction.nomComplet }}
+                </p>
+                <p>
+                    <strong>Compte client :</strong>
+                    {{ lien.transaction.numero_compte }}
+                </p>
+                <p>
+                    <strong>Débit :</strong>
+                    {{ lien.transaction.debit|default_if_none:"—" }}
+                </p>
+                <p>
+                    <strong>Crédit :</strong>
+                    {{ lien.transaction.credit|default_if_none:"—" }}
+                </p>
+                <p>
+                    <strong>Référence :</strong>
+                    {{ lien.transaction.references|default:"—" }}
+                </p>
+            </div>
+        </div>
+    {% empty %}
+        <p>Aucune transaction Valorix liée.</p>
+    {% endfor %}
+
+    {% if rapprochement.statut_validation == "PROPOSE" %}
+        <hr>
+
+        <h2>Actions</h2>
+
+        <form
+            method="post"
+            action="{% url 'core:rapprochement-rejeter' rapprochement.pk %}"
+            class="mb-3"
+        >
+            {% csrf_token %}
+
+            <label for="motif-rejet">
+                Motif du rejet
+            </label>
+
+            <textarea
+                id="motif-rejet"
+                name="motif"
+                class="form-control mb-2"
+                required
+                maxlength="2000"
+            ></textarea>
+
+            <button type="submit" class="btn btn-danger">
+                Rejeter la proposition
+            </button>
+        </form>
+
+        <form
+            method="post"
+            action="{% url 'core:rapprochement-annuler' rapprochement.pk %}"
+        >
+            {% csrf_token %}
+
+            <label for="motif-annulation">
+                Motif de l'annulation
+            </label>
+
+            <textarea
+                id="motif-annulation"
+                name="motif"
+                class="form-control mb-2"
+                required
+                maxlength="2000"
+            ></textarea>
+
+            <button type="submit" class="btn btn-secondary">
+                Annuler la proposition
+            </button>
+
+        </form>
+    {% endif %}
+    
+<form
+    method="post"
+    action="{% url 'core:rapprochement-valider' rapprochement.pk %}"
+    class="mb-3"
+>
+    {% csrf_token %}
+
+    <button type="submit" class="btn btn-success">
+        Valider le rapprochement
+    </button>
+</form>
+
+</div>
+{% endblock %}

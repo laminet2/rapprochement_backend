@@ -1,6 +1,5 @@
 from django.db import models
-from core.enums import StatutRapprochement
-
+import uuid
 
 class TypeTransactionCaisse(models.TextChoices):
     DEPOT_CHEQUE = "DEPOT_CHEQUE", "Dépôt chèques"
@@ -15,11 +14,11 @@ class TypeTransactionCaisse(models.TextChoices):
 
 # Create your models here.
 class TransactionValorix(models.Model):
-    id=models.UUIDField(primary_key=True)
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4)
     numero_transaction=models.CharField()
     date_transaction=models.DateTimeField(auto_now=False, auto_now_add=False)
     numero_compte = models.CharField(max_length = 150)
-    nomComplet=models.CharField()
+    nomComplet=models.CharField(max_length=255)
 
     debit = models.DecimalField(
         max_digits=18,
@@ -33,14 +32,11 @@ class TransactionValorix(models.Model):
         null=True,
         blank=True,
     )
-    references = models.CharField(max_length = 150)
+    references = models.CharField(max_length = 255)
     
     types=models.CharField(
+        max_length = 100,
         choices=TypeTransactionCaisse.choices
-    )
-    status=models.CharField(
-        choices=StatutRapprochement.choices,
-        null=True
     )
 
     references_rapprochement=models.CharField(null=True)

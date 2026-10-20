@@ -1,80 +1,184 @@
 
 import uuid
+
+from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from django.db.models import Q
+
+from valorix.models import TypeTransactionCaisse
 
 
-class StatutRapprochement(models.TextChoices):
-    BROUILLON = "BROUILLON", "Brouillon"
+class StatutValidation(models.TextChoices):
     PROPOSE = "PROPOSE", "Proposé"
     VALIDE = "VALIDE", "Validé"
+    REJETE = "REJETE", "Rejeté"
     ANNULE = "ANNULE", "Annulé"
+
+
+class ResultatMatching(models.TextChoices):
+    CORRESPONDANCE = "CORRESPONDANCE", "Correspondance possible"
+    ECART_MONTANT = "ECART_MONTANT", "Écart de montant"
+    ANOMALIE = "ANOMALIE", "Anomalie"
+    EXCLUDED = "EXCLUDED", "Exclu"
+
+
+class RegleMatching(models.Model):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    nom = models.CharField(max_length=100)
+
+    type_transaction_valorix = models.CharField(
+        max_length=30,
+        choices=TypeTransactionCaisse.choices,
+    )
+
+    fenetre_jours_avant = models.PositiveSmallIntegerField(default=2)
+    fenetre_jours_apres = models.PositiveSmallIntegerField(default=2)
+
+    tolerance_fixe = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+    )
+
+    # Exemple : 1.5 signifie 1,5 %
+    tolerance_pourcentage = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        default=0,
+    )
+
+    active = models.BooleanField(default=True)
+    date_creation = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Règle de rapprochement"
+        verbose_name_plural = "Règles de rapprochement"
+        ordering = ["nom"]
+
+    def __str__(self):
+        return self.nom
 
 
 class Rapprochement(models.Model):
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
-        editable=False
+        editable=False,
     )
 
-    statut = models.CharField(
+    statut_validation = models.CharField(
+        max_length=10,
+        choices=StatutValidation.choices,
+        default=StatutValidation.PROPOSE,
+        db_index=True,
+    )
+
+    # Résultat calculé par le moteur, distinct de la validation humaine.
+    resultat = models.CharField(
         max_length=20,
-        choices=StatutRapprochement.choices,
-        default=StatutRapprochement.BROUILLON
+        choices=ResultatMatching.choices,
+        blank=True,
     )
 
-    date_creation = models.DateTimeField(auto_now_add=True)
-    date_validation = models.DateTimeField(
+    score_correspondance = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+
+    # Écart calculé à partir des montants des transactions liées.
+    ecart_montant = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
         null=True,
-        blank=True
+        blank=True,
+    )
+
+    # Explications du score : montant, date, référence, sens, etc.
+    score_details = models.JSONField(default=dict, blank=True)
+
+    regle = models.ForeignKey(
+        RegleMatching,
+        on_delete=models.PROTECT,
+        related_name="rapprochements",
+        null=True,
+        blank=True,
     )
 
     commentaire = models.TextField(blank=True)
 
+    cree_le = models.DateTimeField(auto_now_add=True, db_index=True)
+    valide_le = models.DateTimeField(null=True, blank=True)
+
+    valide_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="rapprochements_valides",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        verbose_name = "Rapprochement"
+        verbose_name_plural = "Rapprochements"
+        ordering = ["-cree_le"]
+        indexes = [
+            models.Index(fields=["statut_validation", "resultat"]),
+        ]
+
     def __str__(self):
-        return f"Rapprochement {self.id} - {self.statut}"
+        return f"{self.id} - {self.statut_validation}"
 
 
-class TransactionRapprochee(models.Model):
+class TransactionBancaireRapprochee(models.Model):
     rapprochement = models.ForeignKey(
         Rapprochement,
-        on_delete=models.PROTECT,
-        related_name="transactions_bancaires"
+        on_delete=models.CASCADE,
+        related_name="transactions_bancaires",
     )
 
     transaction = models.ForeignKey(
-        "TransactionBancaire",
+        "releverBancaire.TransactionBancaire",
         on_delete=models.PROTECT,
-        related_name="liens_rapprochement"
+        related_name="liens_rapprochement",
     )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["transaction"],
-                name="transaction_dans_un_seul_rapprochement"
-            )
+                fields=["rapprochement", "transaction"],
+                name="uniq_banque_par_rapprochement",
+            ),
         ]
 
+    def __str__(self):
+        return f"{self.transaction_id} -> {self.rapprochement_id}"
 
-class OperationValorixRapprochee(models.Model):
+
+class TransactionValorixRapprochee(models.Model):
     rapprochement = models.ForeignKey(
         Rapprochement,
-        on_delete=models.PROTECT,
-        related_name="operations_valorix"
+        on_delete=models.CASCADE,
+        related_name="transactions_valorix",
     )
 
-    operation = models.ForeignKey(
-        "OperationValorix",
+    transaction = models.ForeignKey(
+        "valorix.TransactionValorix",
         on_delete=models.PROTECT,
-        related_name="liens_rapprochement"
+        related_name="liens_rapprochement",
     )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["operation"],
-                name="operation_valorix_dans_un_seul_rapprochement"
-            )
+                fields=["rapprochement", "transaction"],
+                name="uniq_valorix_par_rapprochement",
+            ),
         ]
+
+    def __str__(self):
+        return f"{self.transaction_id} -> {self.rapprochement_id}"

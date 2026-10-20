@@ -1,6 +1,7 @@
 djangorestframework
 django
 openpyxl
+langchain-core
 langchain
 langchain-openai
 pydantic 

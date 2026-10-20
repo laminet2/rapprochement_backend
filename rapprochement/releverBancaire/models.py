@@ -1,8 +1,6 @@
-
 import uuid
 
 from django.db import models
-from core.enums import StatutRapprochement
 
 
 
@@ -62,7 +60,7 @@ class TransactionBancaire(models.Model):
     date_transaction = models.DateField()
     date_valeur = models.DateField(null=True, blank=True)
 
-    reference_bancaire = models.CharField(
+    reference_rapprochement = models.CharField(
         max_length=100,
         null=True,
         blank=True,
@@ -87,13 +85,6 @@ class TransactionBancaire(models.Model):
     solde_apres_operation = models.DecimalField(
         max_digits=18,
         decimal_places=2,
-        null=True,
-        blank=True,
-    )
-
-    statut = models.CharField(
-        max_length=20,
-        choices=StatutRapprochement.choices,
         null=True,
         blank=True,
     )

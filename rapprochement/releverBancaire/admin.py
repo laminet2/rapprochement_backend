@@ -16,7 +16,7 @@ class CompteBancaireAdmin(admin.ModelAdmin):
 
 @admin.register(TransactionBancaire)
 class TransactionBancaireAdmin(admin.ModelAdmin):
-    list_display = ('id', 'compte', 'date_transaction', 'type_transaction', 'debit', 'credit', 'statut')
-    list_filter = ( 'statut','type_transaction', 'compte__banque')
-    search_fields = ('libelle_brut', 'reference_bancaire')
+    list_display = ('id', 'compte', 'date_transaction', 'type_transaction', 'debit', 'credit','libelle_brut','reference_rapprochement')
+    list_filter = ( 'type_transaction', 'compte__banque')
+    search_fields = ('libelle_brut', 'reference_rapprochement')
     date_hierarchy = 'date_transaction'

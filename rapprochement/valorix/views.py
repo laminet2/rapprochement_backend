@@ -1,5 +1,6 @@
 import uuid
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, date
 
 from django.db import transaction
 from django.utils import timezone
@@ -93,8 +94,35 @@ class ImportValorixView(generics.GenericAPIView):
                         raise ValueError("Type de transaction non reconnu.")
 
                     date_transaction = ligne[index["date_transaction"]]
-                    if not hasattr(date_transaction, "date"):
+
+                    if isinstance(date_transaction, datetime):
+                        # Déjà un datetime, rien à faire
+                        pass
+                    elif isinstance(date_transaction, date):
+                        # Si c'est un objet date simple (sans heure)
+                        date_transaction = datetime.combine(date_transaction, datetime.min.time())
+                    elif isinstance(date_transaction, str):
+                        # Si c'est une chaîne au format "04/05/2026 09:33:27" (ou juste "04/05/2026")
+                        date_str = date_transaction.strip()
+                        parsed_date = None
+                        
+                        # On essaie d'abord avec l'heure, puis sans l'heure par sécurité
+                        formats = ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y")
+                        for fmt in formats:
+                            try:
+                                parsed_date = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                                
+                        if parsed_date:
+                            date_transaction = parsed_date
+                        else:
+                            raise ValueError(f"Format de date invalide : {date_str}")
+                    else:
                         raise ValueError("Date de transaction invalide.")
+
+                    # Application du fuseau horaire si nécessaire
                     if timezone.is_naive(date_transaction):
                         date_transaction = timezone.make_aware(
                             date_transaction,
