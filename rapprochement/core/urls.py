@@ -7,11 +7,17 @@ from core.views import (
     ValiderRapprochementAPIView,
     RejeterRapprochementAPIView,
     AnnulerRapprochementAPIView,
+    GenererRapprochementsAPIView
 )
 
 app_name = "core"
 
 urlpatterns = [
+    path(
+        "generer/",
+        GenererRapprochementsAPIView.as_view(),
+        name="rapprochement-generer",
+    ),
     path(
         "",
         RapprochementListeAPIView.as_view(),

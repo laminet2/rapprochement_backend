@@ -26,6 +26,40 @@ from core.services.actions import (
     ActionRapprochementError,
 )
 
+from core.services.proposition import generer_toutes_les_propositions
+
+
+class GenererRapprochementsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            bilan = generer_toutes_les_propositions()
+
+            # Les objets Rapprochement ne sont pas directement
+            # sérialisables en JSON : on retourne un bilan simple.
+            return Response(
+                {
+                    "message": "Génération des propositions terminée.",
+                    "transactions_traitees": bilan["transactions_traitees"],
+                    "propositions_creees": bilan["creees"],
+                    "propositions_actualisees": bilan["actualisees"],
+                    "propositions_ignorees": bilan["ignorees"],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception:
+            return Response(
+                {
+                    "message": (
+                        "Une erreur est survenue pendant "
+                        "la génération des propositions."
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
 
 def erreur_metier_vers_reponse(exc):
     if isinstance(exc, DjangoValidationError):

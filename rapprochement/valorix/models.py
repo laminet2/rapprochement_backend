@@ -39,6 +39,6 @@ class TransactionValorix(models.Model):
         choices=TypeTransactionCaisse.choices
     )
 
-    references_rapprochement=models.CharField(max_length=255,null=True)
+    #references_rapprochement=models.CharField(max_length=255,null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

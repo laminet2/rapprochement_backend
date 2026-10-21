@@ -1,3 +1,5 @@
+from django.utils import timezone
+from core.models import RegleMatching
 
 from django.db import transaction
 
@@ -154,3 +156,59 @@ def generer_propositions(
         resultat["propositions"].append(proposition)
 
     return resultat
+
+
+
+def generer_toutes_les_propositions(sens_banque_par_type=None):
+    """
+    Parcourt les transactions Valorix éligibles
+    et génère leurs propositions selon les règles actives.
+    """
+    aujourd_hui = timezone.localdate()
+
+    bilan = {
+        "transactions_traitees": 0,
+        "creees": 0,
+        "actualisees": 0,
+        "ignorees": 0,
+        "propositions": [],
+    }
+
+    regles = RegleMatching.objects.filter(active=True)
+
+    for regle in regles:
+        transactions = TransactionValorix.objects.filter(
+            types=regle.type_transaction_valorix,
+        )
+
+        # Par défaut, traiter uniquement les transactions
+        # Valorix créées aujourd'hui.
+        if not regle.prendre_valorix_anciennes:
+            transactions = transactions.filter(
+                created_at__date=aujourd_hui,
+            )
+
+        # Exclure les transactions déjà rapprochées et validées.
+        transactions = transactions.exclude(
+            pk__in=TransactionValorixRapprochee.objects.filter(
+                rapprochement__statut_validation=StatutValidation.VALIDE,
+            ).values("transaction_id")
+        )
+
+        for transaction_valorix in transactions.iterator():
+            bilan["transactions_traitees"] += 1
+
+            resultat = generer_propositions(
+                transaction_valorix=transaction_valorix,
+                regle=regle,
+                sens_banque_par_type=sens_banque_par_type,
+            )
+
+            bilan["creees"] += resultat["creees"]
+            bilan["actualisees"] += resultat["actualisees"]
+            bilan["ignorees"] += resultat["ignorees"]
+            bilan["propositions"].extend(
+                resultat["propositions"]
+            )
+
+    return bilan
