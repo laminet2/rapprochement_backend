@@ -1,4 +1,4 @@
-
+from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
 
@@ -134,6 +134,12 @@ def rechercher_candidats_bancaires(
     transactions_bancaires = TransactionBancaire.objects.filter(
         date_transaction__range=(date_debut, date_fin),
     ).select_related("compte", "compte__banque")
+
+    if not regle.prendre_banque_anciennes:
+        aujourd_hui = timezone.localdate()
+        transactions_bancaires = transactions_bancaires.filter(
+            created_at__date=aujourd_hui
+        )
 
     candidats = []
 
