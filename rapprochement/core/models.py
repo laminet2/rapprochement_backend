@@ -43,6 +43,7 @@ class RegleMatching(models.Model):
         max_digits=18,
         decimal_places=2,
         default=0,
+        validators=[MinValueValidator(0)]
     )
 
     # Exemple : 1.5 signifie 1,5 %
@@ -50,10 +51,14 @@ class RegleMatching(models.Model):
         max_digits=7,
         decimal_places=4,
         default=0,
+        validators=[MinValueValidator(0)]
     )
 
     active = models.BooleanField(default=True)
     date_creation = models.DateTimeField(auto_now_add=True)
+    
+    prendre_valorix_anciennes = models.BooleanField(default=True)
+    prendre_banque_anciennes = models.BooleanField(default=True)   
 
     class Meta:
         verbose_name = "Règle de rapprochement"
