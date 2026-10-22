@@ -11,6 +11,13 @@ class TypeTransactionCaisse(models.TextChoices):
     RETRAIT_VIREMENTS = "RETRAIT_VIREMENTS", "Retrait/Virements"
     AUTRE = "AUTRE", "Autre"
 
+class StatutRapprochement(models.TextChoices):
+    A_TRAITER = "A_TRAITER", "À traiter"
+    EXCLUE = "EXCLUE", "Exclue"
+
+TYPES_EXCLUS_PAR_DEFAUT = {
+    TypeTransactionCaisse.DEPOT_CHEQUE,
+}
 
 # Create your models here.
 class TransactionValorix(models.Model):
@@ -42,3 +49,12 @@ class TransactionValorix(models.Model):
     #references_rapprochement=models.CharField(max_length=255,null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    statut_rapprochement =  models.BooleanField(default=True)
+
+
+def obtenir_statut_initial_rapprochement(type_transaction):
+    if type_transaction in TYPES_EXCLUS_PAR_DEFAUT:
+        return False
+
+    return True

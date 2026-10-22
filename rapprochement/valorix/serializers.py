@@ -53,4 +53,6 @@ class TransactionValorixJSONSerializer(serializers.Serializer):
         required=False,
         default="",
     )
+    statut_rapprochement=serializers.CharField(max_length = 150)
+    
     types = serializers.CharField(max_length=100)

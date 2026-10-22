@@ -177,7 +177,7 @@ def generer_toutes_les_propositions(regles=None):
 
     for regle in regles:
         transactions = TransactionValorix.objects.filter(
-            types=regle.type_transaction_valorix,
+            types=regle.type_transaction_valorix,statut_rapprochement=True
         )
 
         # Par défaut, traiter uniquement les transactions

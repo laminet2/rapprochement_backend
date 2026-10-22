@@ -16,7 +16,7 @@ from rest_framework.response import Response
 
 from rest_framework.views import APIView
 
-from .models import TypeTransactionCaisse, TransactionValorix
+from .models import TypeTransactionCaisse, TransactionValorix,StatutRapprochement,obtenir_statut_initial_rapprochement
 from .serializers import (
     ImportValorixSerializer,
     TransactionValorixSerializer,
@@ -347,6 +347,7 @@ class ImportValorixView(generics.GenericAPIView):
                             nomComplet=str(nom or "").strip(),
                             debit=debit,
                             credit=credit,
+                            statut_rapprochement=obtenir_statut_initial_rapprochement(type_courant),
                             references=str(
                                 references or ""
                             ).strip(),
