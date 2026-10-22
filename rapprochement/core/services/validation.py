@@ -23,8 +23,7 @@ class ValidationRapprochementError(Exception):
 @transaction.atomic
 def valider_rapprochement(
     rapprochement_id,
-    utilisateur,
-    sens_banque_par_type=None,
+    utilisateur
 ):
     """
     Valide une proposition 1-1 après vérifications.
@@ -189,10 +188,8 @@ def valider_rapprochement(
         )
 
     # Si une correspondance de sens a été configurée, la revérifier.
-    sens_banque_par_type = sens_banque_par_type or {}
-    sens_attendu = (
-    "CREDIT" if sens_valorix == "DEBIT" else "DEBIT"
-)
+    
+    sens_attendu = regle.sens_transaction_document_cible
 
     if sens_banque != sens_attendu:
         raise ValidationRapprochementError(

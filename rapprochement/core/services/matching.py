@@ -10,8 +10,7 @@ def rechercher_et_classer(
 ):
     candidats = rechercher_candidats_bancaires(
         transaction_valorix=transaction_valorix,
-        regle=regle,
-        sens_banque_par_type=sens_banque_par_type,
+        regle=regle
     )
 
     return classer_candidats(candidats, regle)
