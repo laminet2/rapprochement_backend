@@ -7,6 +7,9 @@ from django.db import models
 
 from valorix.models import TypeTransactionCaisse
 
+class sens_transactions(models.TextChoices):
+    CREDIT="CREDIT","credit"
+    DEBIT="DEBIT","debit"
 
 class StatutValidation(models.TextChoices):
     PROPOSE = "PROPOSE", "Proposé"
@@ -36,6 +39,12 @@ class RegleMatching(models.Model):
         choices=TypeTransactionCaisse.choices,
     )
 
+    sens_transaction_document_cible=models.CharField(
+        max_length=40,
+        choices=sens_transactions.choices,
+        default=sens_transactions.CREDIT
+    )
+
     fenetre_jours_avant = models.PositiveSmallIntegerField(default=2)
     fenetre_jours_apres = models.PositiveSmallIntegerField(default=2)
 
@@ -54,7 +63,7 @@ class RegleMatching(models.Model):
         validators=[MinValueValidator(0)]
     )
 
-    active = models.BooleanField(default=True)
+    default_regle = models.BooleanField(default=False)
     date_creation = models.DateTimeField(auto_now_add=True)
     
     prendre_valorix_anciennes = models.BooleanField(default=True)

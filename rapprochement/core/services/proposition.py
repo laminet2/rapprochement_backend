@@ -18,8 +18,7 @@ from valorix.models import TransactionValorix
 @transaction.atomic
 def generer_propositions(
     transaction_valorix,
-    regle,
-    sens_banque_par_type=None,
+    regle
 ):
     """
     Recherche et enregistre les propositions 1-1 pour une transaction
@@ -47,7 +46,7 @@ def generer_propositions(
         "propositions": [],
     }
 
-    if not regle.active or valorix.types != regle.type_transaction_valorix:
+    if  valorix.types != regle.type_transaction_valorix:
         return resultat
 
     # Une transaction Valorix déjà rapprochée et validée ne doit
@@ -63,8 +62,7 @@ def generer_propositions(
 
     candidats = rechercher_candidats_bancaires(
         transaction_valorix=valorix,
-        regle=regle,
-        sens_banque_par_type=sens_banque_par_type,
+        regle=regle
     )
 
     candidats = classer_candidats(candidats, regle)
@@ -159,7 +157,7 @@ def generer_propositions(
 
 
 
-def generer_toutes_les_propositions(sens_banque_par_type=None):
+def generer_toutes_les_propositions(regles=None):
     """
     Parcourt les transactions Valorix éligibles
     et génère leurs propositions selon les règles actives.
@@ -174,7 +172,8 @@ def generer_toutes_les_propositions(sens_banque_par_type=None):
         "propositions": [],
     }
 
-    regles = RegleMatching.objects.filter(active=True)
+    if not regles: 
+        regles = RegleMatching.objects.filter(default_regle=True)
 
     for regle in regles:
         transactions = TransactionValorix.objects.filter(
@@ -200,8 +199,7 @@ def generer_toutes_les_propositions(sens_banque_par_type=None):
 
             resultat = generer_propositions(
                 transaction_valorix=transaction_valorix,
-                regle=regle,
-                sens_banque_par_type=sens_banque_par_type,
+                regle=regle
             )
 
             bilan["creees"] += resultat["creees"]

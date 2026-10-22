@@ -190,12 +190,15 @@ def valider_rapprochement(
 
     # Si une correspondance de sens a été configurée, la revérifier.
     sens_banque_par_type = sens_banque_par_type or {}
-    sens_attendu = sens_banque_par_type.get(transaction_valorix.types)
+    sens_attendu = (
+    "CREDIT" if sens_valorix == "DEBIT" else "DEBIT"
+)
 
-    if sens_attendu is not None and sens_banque != sens_attendu:
+    if sens_banque != sens_attendu:
         raise ValidationRapprochementError(
-            "Le sens de la transaction bancaire ne correspond pas "
-            "à la règle métier configurée."
+            "Le sens bancaire doit être inverse du sens Valorix : "
+            "un débit Valorix doit correspondre à un crédit bancaire, "
+            "et un crédit Valorix à un débit bancaire."
         )
 
     # Les deux transactions sont maintenant considérées compatibles.

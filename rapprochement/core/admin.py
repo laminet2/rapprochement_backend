@@ -27,11 +27,11 @@ class RegleMatchingAdmin(admin.ModelAdmin):
         'fenetre_jours_apres',
         'tolerance_fixe',
         'tolerance_pourcentage',
-        'active',
+        'default_regle',
         "prendre_banque_anciennes",
         "prendre_valorix_anciennes"
     )
-    list_editable = ('active',)
+    list_editable = ('default_regle',)
     search_fields = ('nom',)
 
 

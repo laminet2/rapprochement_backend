@@ -3,32 +3,27 @@ from decimal import Decimal
 
 
 def _score_montant(ecart, tolerance):
-    """
-    Jusqu'à 40 points.
-    Un écart nul donne le maximum ; un écart égal à la tolérance
-    donne zéro point pour ce critère, sauf si la tolérance est nulle.
-    """
+    """Attribue jusqu'à 30 points selon la proximité des montants."""
     ecart = Decimal(str(ecart))
     tolerance = Decimal(str(tolerance))
 
     if ecart < 0 or tolerance < 0:
-        raise ValueError("L'écart et la tolérance doivent être positifs ou nuls.")
+        raise ValueError(
+            "L'écart et la tolérance doivent être positifs ou nuls."
+        )
 
     if ecart > tolerance:
         return 0
 
     if tolerance == 0:
-        return 40 if ecart == 0 else 0
+        return 30 if ecart == 0 else 0
 
     proportion = (tolerance - ecart) / tolerance
-    return round(float(proportion * Decimal("40")))
+    return round(float(proportion * Decimal("30")))
 
 
 def _score_date(ecart_jours, regle):
-    """
-    Jusqu'à 25 points, selon la proximité de la date.
-    La fenêtre avant et la fenêtre après sont évaluées séparément.
-    """
+    """Attribue jusqu'à 15 points selon la proximité des dates."""
     ecart_jours = int(ecart_jours)
     distance = abs(ecart_jours)
 
@@ -38,21 +33,33 @@ def _score_date(ecart_jours, regle):
         fenetre = regle.fenetre_jours_apres
 
     if distance == 0:
-        return 25
+        return 15
 
     if fenetre <= 0 or distance > fenetre:
         return 0
 
     proportion = Decimal(fenetre - distance) / Decimal(fenetre)
-    return round(float(proportion * Decimal("25")))
+    return round(float(proportion * Decimal("15")))
+
+
+def _sens_inverse_correct(candidat):
+    """Vérifie que le sens bancaire est inverse du sens Valorix."""
+    sens_valorix = candidat.get("sens_valorix")
+    sens_banque = candidat.get("sens_banque")
+
+    return (
+        (sens_valorix == "DEBIT" and sens_banque == "CREDIT")
+        or
+        (sens_valorix == "CREDIT" and sens_banque == "DEBIT")
+    )
 
 
 def calculer_score(candidat, regle):
     """
-    Calcule un score de 0 à 100 et détaille les critères.
+    Calcule un score de 0 à 100.
 
-    Le candidat doit provenir de rechercher_candidats_bancaires().
-    Ce score sert au classement et ne valide jamais une opération.
+    Le score classe les candidats mais ne valide jamais
+    automatiquement un rapprochement.
     """
     ecart = Decimal(str(candidat["ecart_montant"]))
     tolerance = Decimal(str(candidat["tolerance"]))
@@ -60,42 +67,73 @@ def calculer_score(candidat, regle):
     score_montant = _score_montant(ecart, tolerance)
     score_date = _score_date(candidat["ecart_jours"], regle)
 
-    score_reference = (
-        25 if candidat.get("reference_correspond", False) else 0
+    # La référence exacte et le numéro de chèque appartiennent
+    # au même critère : on ne cumule pas leurs points.
+    reference_correspond = bool(
+        candidat.get("reference_correspond", False)
     )
+    cheque_correspond = bool(
+        candidat.get("numero_cheque_correspond", False)
+    )
+    identifiant_correspond = (
+        reference_correspond or cheque_correspond
+    )
+    score_reference = 25 if identifiant_correspond else 0
 
-    # Ces points ne sont attribués que si une règle de sens
-    # a été explicitement configurée et que le candidat l'a respectée.
-    score_sens = 10 if candidat.get("sens_verifie", False) else 0
+    compte_correspond = bool(
+        candidat.get("compte_correspond", False)
+    )
+    score_compte = 15 if compte_correspond else 0
 
-    score_total = min(
-        100,
-        score_montant + score_date + score_reference + score_sens,
+    nom_correspond = bool(candidat.get("nom_correspond", False))
+    score_nom = 10 if nom_correspond else 0
+
+    sens_correct = _sens_inverse_correct(candidat)
+    score_sens = 5 if sens_correct else 0
+
+    score_total = (
+        score_montant
+        + score_date
+        + score_reference
+        + score_compte
+        + score_nom
+        + score_sens
     )
 
     details = {
         "montant": {
             "score": score_montant,
-            "maximum": 40,
+            "maximum": 30,
             "ecart": str(ecart),
             "tolerance": str(tolerance),
         },
         "date": {
             "score": score_date,
-            "maximum": 25,
+            "maximum": 15,
             "ecart_jours": candidat["ecart_jours"],
         },
         "reference": {
             "score": score_reference,
             "maximum": 25,
-            "correspond": bool(
-                candidat.get("reference_correspond", False)
-            ),
+            "correspond": reference_correspond,
+            "numero_cheque_correspond": cheque_correspond,
+        },
+        "compte": {
+            "score": score_compte,
+            "maximum": 15,
+            "correspond": compte_correspond,
+        },
+        "nom_client": {
+            "score": score_nom,
+            "maximum": 10,
+            "correspond": nom_correspond,
         },
         "sens": {
             "score": score_sens,
-            "maximum": 10,
-            "verifie": bool(candidat.get("sens_verifie", False)),
+            "maximum": 5,
+            "verifie": sens_correct,
+            "sens_valorix": candidat.get("sens_valorix"),
+            "sens_banque": candidat.get("sens_banque"),
         },
     }
 
