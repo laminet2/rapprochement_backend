@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from rest_framework.permissions import IsAuthenticated
 
 from .models import (
     TransactionBancaire,
@@ -384,7 +385,7 @@ class ImportTransactionsJSONView(APIView):
                     date_transaction=ligne["date_transaction"],
                     date_valeur=ligne.get("date_valeur"),
                     reference_rapprochement=(
-                        ligne.get("numero_compte_ou_cheque")
+                        ligne.get("reference_rapprochement")
                     ),
                     libelle_brut=ligne["libelle_brut"],
                     debit=ligne.get("debit"),
@@ -425,3 +426,28 @@ class ImportTransactionsJSONView(APIView):
             {"message": "Transactions bien enregistrées."},
             status=status.HTTP_201_CREATED,
         )
+
+
+
+
+class CompteBancaireListeAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        comptes = (
+            CompteBancaire.objects
+            .select_related("banque")
+            .order_by("banque__nom", "numero_compte")
+        )
+
+        donnees = [
+            {
+                "id": compte.id,
+                "numero_compte": compte.numero_compte,
+                "banque": compte.banque.nom,
+                "devise": compte.devise,
+            }
+            for compte in comptes
+        ]
+
+        return Response(donnees)

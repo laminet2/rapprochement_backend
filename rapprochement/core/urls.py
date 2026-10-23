@@ -7,7 +7,12 @@ from core.views import (
     ValiderRapprochementAPIView,
     RejeterRapprochementAPIView,
     AnnulerRapprochementAPIView,
-    GenererRapprochementsAPIView
+    GenererRapprochementsAPIView,
+    RegleMatchingListeAPIView,
+    RegleMatchingDetailAPIView,
+    ValiderTousRapprochementsAPIView,
+    RapprochementStatistiquesAPIView,
+
 )
 
 app_name = "core"
@@ -43,4 +48,24 @@ urlpatterns = [
         AnnulerRapprochementAPIView.as_view(),
         name="rapprochement-annuler",
     ),
+    path(
+    "regles/",
+    RegleMatchingListeAPIView.as_view(),
+    name="regles-liste",
+),
+path(
+    "regles/<uuid:pk>/",
+    RegleMatchingDetailAPIView.as_view(),
+    name="regles-detail",
+),
+path(
+    "valider-tout/",
+    ValiderTousRapprochementsAPIView.as_view(),
+    name="rapprochement-valider-tout",
+),
+path(
+    "statistiques/",
+    RapprochementStatistiquesAPIView.as_view(),
+    name="rapprochement-statistiques",
+),
 ]

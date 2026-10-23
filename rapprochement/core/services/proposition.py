@@ -39,6 +39,10 @@ def generer_propositions(
         .get(pk=transaction_valorix.pk)
     )
 
+    if not valorix.statut_rapprochement:
+        resultat["ignorees"] += 1
+        return resultat
+    
     resultat = {
         "creees": 0,
         "actualisees": 0,

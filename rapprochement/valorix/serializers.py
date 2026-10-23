@@ -53,6 +53,8 @@ class TransactionValorixJSONSerializer(serializers.Serializer):
         required=False,
         default="",
     )
-    statut_rapprochement=serializers.CharField(max_length = 150)
+    statut_rapprochement=serializers.BooleanField()
     
-    types = serializers.CharField(max_length=100)
+    types = serializers.ChoiceField(
+    choices=TransactionValorix._meta.get_field("types").choices
+    )

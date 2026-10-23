@@ -11,10 +11,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import Rapprochement, StatutValidation, ResultatMatching
+from core.models import Rapprochement, StatutValidation, ResultatMatching,RegleMatching
 from core.serializers import (
     RapprochementSerializer,
     MotifActionSerializer,
+    RegleMatchingSerializer
 )
 from core.services.validation import (
     valider_rapprochement,
@@ -28,6 +29,8 @@ from core.services.actions import (
 
 from core.services.proposition import generer_toutes_les_propositions
 
+from valorix.models import TransactionValorix
+from releverBancaire.models import TransactionBancaire
 
 class GenererRapprochementsAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -198,3 +201,108 @@ class RejeterRapprochementAPIView(ActionMotifRapprochementAPIView):
 
 class AnnulerRapprochementAPIView(ActionMotifRapprochementAPIView):
     action_service = staticmethod(annuler_rapprochement)
+
+
+class RegleMatchingListeAPIView(generics.ListCreateAPIView):
+    queryset = RegleMatching.objects.all().order_by("nom")
+    serializer_class = RegleMatchingSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class RegleMatchingDetailAPIView(
+    generics.RetrieveUpdateDestroyAPIView
+):
+    queryset = RegleMatching.objects.all()
+    serializer_class = RegleMatchingSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = "id"
+    lookup_url_kwarg = "pk"
+
+class ValiderTousRapprochementsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        ids = list(
+            Rapprochement.objects
+            .filter(statut_validation=StatutValidation.PROPOSE)
+            .values_list("id", flat=True)
+        )
+
+        valides = 0
+        erreurs = []
+
+        for rapprochement_id in ids:
+            try:
+                valider_rapprochement(
+                    rapprochement_id=rapprochement_id,
+                    utilisateur=request.user,
+                )
+                valides += 1
+
+            except (
+                ValidationRapprochementError,
+                DjangoValidationError,
+                Rapprochement.DoesNotExist,
+            ) as exc:
+                detail = (
+                    exc.messages
+                    if isinstance(exc, DjangoValidationError)
+                    else str(exc)
+                )
+                erreurs.append({
+                    "id": str(rapprochement_id),
+                    "detail": detail,
+                })
+
+        return Response(
+            {
+                "total_a_traiter": len(ids),
+                "valides": valides,
+                "echecs": len(erreurs),
+                "erreurs": erreurs,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
+class RapprochementStatistiquesAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "transactions_valorix": (
+                TransactionValorix.objects.count()
+            ),
+            "transactions_valorix_a_rapprocher": (
+                TransactionValorix.objects.filter(
+                    statut_rapprochement=True
+                ).count()
+            ),
+            "transactions_valorix_exclues": (
+                TransactionValorix.objects.filter(
+                    statut_rapprochement=False
+                ).count()
+            ),
+            "transactions_bancaires": (
+                TransactionBancaire.objects.count()
+            ),
+            "propositions_en_attente": (
+                Rapprochement.objects.filter(
+                    statut_validation=StatutValidation.PROPOSE
+                ).count()
+            ),
+            "rapprochements_valides": (
+                Rapprochement.objects.filter(
+                    statut_validation=StatutValidation.VALIDE
+                ).count()
+            ),
+            "rapprochements_rejetes": (
+                Rapprochement.objects.filter(
+                    statut_validation=StatutValidation.REJETE
+                ).count()
+            ),
+            "rapprochements_annules": (
+                Rapprochement.objects.filter(
+                    statut_validation=StatutValidation.ANNULE
+                ).count()
+            ),
+        })

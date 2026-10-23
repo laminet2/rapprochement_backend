@@ -4,8 +4,9 @@ from rest_framework import serializers
 from core.models import (
     Rapprochement,
     TransactionBancaireRapprochee,
-    TransactionValorixRapprochee,
+    TransactionValorixRapprochee,RegleMatching
 )
+
 
 
 class TransactionBancaireRapprocheeSerializer(
@@ -161,3 +162,10 @@ class MotifActionSerializer(serializers.Serializer):
         trim_whitespace=True,
         max_length=2000,
     )
+
+
+class RegleMatchingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RegleMatching
+        fields = "__all__"
+        read_only_fields = ("id", "date_creation")

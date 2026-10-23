@@ -11,9 +11,6 @@ class TypeTransactionCaisse(models.TextChoices):
     RETRAIT_VIREMENTS = "RETRAIT_VIREMENTS", "Retrait/Virements"
     AUTRE = "AUTRE", "Autre"
 
-class StatutRapprochement(models.TextChoices):
-    A_TRAITER = "A_TRAITER", "À traiter"
-    EXCLUE = "EXCLUE", "Exclue"
 
 TYPES_EXCLUS_PAR_DEFAUT = {
     TypeTransactionCaisse.DEPOT_CHEQUE,

@@ -7,3 +7,4 @@ langchain-openai
 pydantic 
 pdfplumber
 dotenv
+djangorestframework-simplejwt
