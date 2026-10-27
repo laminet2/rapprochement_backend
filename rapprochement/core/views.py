@@ -37,7 +37,42 @@ class GenererRapprochementsAPIView(APIView):
 
     def post(self, request):
         try:
-            bilan = generer_toutes_les_propositions(request.data.get("regle"))
+
+            regle_data = request.data.get("regle")
+
+            if not regle_data:
+                return Response(
+                    {"message": "La règle est obligatoire."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            regle = RegleMatching(
+             
+                type_transaction_valorix=regle_data["type_transaction_valorix"],
+                sens_transaction_document_cible=
+                    regle_data.get(
+                        "sens_transaction_document_cible",
+                        "CREDIT"
+                    ),
+                fenetre_jours_avant=
+                    regle_data.get("fenetre_jours_avant", 2),
+                fenetre_jours_apres=
+                    regle_data.get("fenetre_jours_apres", 2),
+                tolerance_fixe=
+                    regle_data.get("tolerance_fixe", 0),
+                tolerance_pourcentage=
+                    regle_data.get("tolerance_pourcentage", 0),
+                prendre_valorix_anciennes=
+                    regle_data.get("prendre_valorix_anciennes", True),
+                prendre_banque_anciennes=
+                    regle_data.get("prendre_banque_anciennes", True),
+                types_valorix_ignorer=
+                    regle_data.get("types_valorix_ignorer", []),
+            )
+
+            regle.full_clean()
+
+            bilan = generer_toutes_les_propositions(regle)
 
             # Les objets Rapprochement ne sont pas directement
             # sérialisables en JSON : on retourne un bilan simple.
@@ -200,20 +235,7 @@ class AnnulerRapprochementAPIView(ActionMotifRapprochementAPIView):
     action_service = staticmethod(annuler_rapprochement)
 
 
-class RegleMatchingListeAPIView(generics.ListCreateAPIView):
-    queryset = RegleMatching.objects.all().order_by("nom")
-    serializer_class = RegleMatchingSerializer
-    #permission_classes = [IsAuthenticated]
 
-
-class RegleMatchingDetailAPIView(
-    generics.RetrieveUpdateDestroyAPIView
-):
-    queryset = RegleMatching.objects.all()
-    serializer_class = RegleMatchingSerializer
-    #permission_classes = [IsAuthenticated]
-    lookup_field = "id"
-    lookup_url_kwarg = "pk"
 
 class ValiderTousRapprochementsAPIView(APIView):
     #permission_classes = [IsAuthenticated]

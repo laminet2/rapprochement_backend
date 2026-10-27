@@ -32,8 +32,6 @@ class RegleMatching(models.Model):
         editable=False,
     )
 
-    nom = models.CharField(max_length=100)
-
     type_transaction_valorix = models.CharField(
         max_length=30,
         choices=TypeTransactionCaisse.choices,
@@ -76,10 +74,6 @@ class RegleMatching(models.Model):
     class Meta:
         verbose_name = "Règle de rapprochement"
         verbose_name_plural = "Règles de rapprochement"
-        ordering = ["nom"]
-
-    def __str__(self):
-        return self.nom
 
 
 class Rapprochement(models.Model):

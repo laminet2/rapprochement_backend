@@ -166,7 +166,7 @@ def generer_toutes_les_propositions(regle):
     Parcourt les transactions Valorix éligibles
     et génère leurs propositions selon les règles actives.
     """
-    aujourd_hui = timezone.localdate()
+    
 
     bilan = {
         "transactions_traitees": 0,

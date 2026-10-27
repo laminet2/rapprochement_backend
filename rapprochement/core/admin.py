@@ -3,7 +3,7 @@ from core.models import (
     RegleMatching,
     Rapprochement,
     TransactionBancaireRapprochee,
-    TransactionValorixRapprochee,
+    TransactionValorixRapprochee
 )
 
 
@@ -22,7 +22,7 @@ class TransactionValorixInline(admin.TabularInline):
 @admin.register(RegleMatching)
 class RegleMatchingAdmin(admin.ModelAdmin):
     list_display = (
-        'nom',
+        
         'fenetre_jours_avant',
         'fenetre_jours_apres',
         'tolerance_fixe',
@@ -31,7 +31,6 @@ class RegleMatchingAdmin(admin.ModelAdmin):
         "prendre_banque_anciennes",
         "prendre_valorix_anciennes"
     )
-    search_fields = ('nom',)
 
 
 @admin.register(Rapprochement)

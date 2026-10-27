@@ -7,8 +7,6 @@ from core.models import (
     TransactionValorixRapprochee,RegleMatching
 )
 
-
-
 class TransactionBancaireRapprocheeSerializer(
     serializers.ModelSerializer
 ):
@@ -53,7 +51,7 @@ class TransactionBancaireRapprocheeSerializer(
             "libelle",
             "debit",
             "credit",
-            "banque",
+            "banque"
         ]
 
 
@@ -128,11 +126,6 @@ class RapprochementSerializer(serializers.ModelSerializer):
             read_only=True,
         )
     )
-    regle_nom = serializers.CharField(
-        source="regle.nom",
-        read_only=True,
-        allow_null=True,
-    )
 
     class Meta:
         model = Rapprochement
@@ -143,12 +136,9 @@ class RapprochementSerializer(serializers.ModelSerializer):
             "score_correspondance",
             "ecart_montant",
             "score_details",
-            "regle",
-            "regle_nom",
             "commentaire",
             "cree_le",
             "valide_le",
-            "valide_par",
             "transactions_bancaires",
             "transactions_valorix",
         ]
