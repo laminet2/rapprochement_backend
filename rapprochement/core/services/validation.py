@@ -22,8 +22,7 @@ class ValidationRapprochementError(Exception):
 
 @transaction.atomic
 def valider_rapprochement(
-    rapprochement_id,
-    utilisateur
+    rapprochement_id
 ):
     """
     Valide une proposition 1-1 après vérifications.
@@ -203,14 +202,13 @@ def valider_rapprochement(
     rapprochement.statut_validation = StatutValidation.VALIDE
     rapprochement.ecart_montant = evaluation["ecart"]
     rapprochement.valide_le = timezone.now()
-    rapprochement.valide_par = utilisateur
+    #rapprochement.valide_par = utilisateur
 
     rapprochement.save(
         update_fields=[
             "statut_validation",
             "ecart_montant",
             "valide_le",
-            "valide_par",
         ]
     )
 

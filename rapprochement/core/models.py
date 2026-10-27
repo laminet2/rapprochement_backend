@@ -63,11 +63,15 @@ class RegleMatching(models.Model):
         validators=[MinValueValidator(0)]
     )
 
-    default_regle = models.BooleanField(default=False)
     date_creation = models.DateTimeField(auto_now_add=True)
     
     prendre_valorix_anciennes = models.BooleanField(default=True)
     prendre_banque_anciennes = models.BooleanField(default=True)   
+
+    types_valorix_ignorer=models.JSONField(
+        default=list, 
+        blank=True,
+    )
 
     class Meta:
         verbose_name = "Règle de rapprochement"
@@ -128,13 +132,6 @@ class Rapprochement(models.Model):
     cree_le = models.DateTimeField(auto_now_add=True, db_index=True)
     valide_le = models.DateTimeField(null=True, blank=True)
 
-    valide_par = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="rapprochements_valides",
-        null=True,
-        blank=True,
-    )
 
     class Meta:
         verbose_name = "Rapprochement"

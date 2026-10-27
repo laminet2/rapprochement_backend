@@ -431,7 +431,7 @@ class ImportTransactionsJSONView(APIView):
 
 
 class CompteBancaireListeAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def get(self, request):
         comptes = (

@@ -12,10 +12,6 @@ class TypeTransactionCaisse(models.TextChoices):
     AUTRE = "AUTRE", "Autre"
 
 
-TYPES_EXCLUS_PAR_DEFAUT = {
-    TypeTransactionCaisse.DEPOT_CHEQUE,
-}
-
 # Create your models here.
 class TransactionValorix(models.Model):
     id=models.UUIDField(primary_key=True,default=uuid.uuid4)
@@ -47,11 +43,4 @@ class TransactionValorix(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
-    statut_rapprochement =  models.BooleanField(default=True)
 
-
-def obtenir_statut_initial_rapprochement(type_transaction):
-    if type_transaction in TYPES_EXCLUS_PAR_DEFAUT:
-        return False
-
-    return True

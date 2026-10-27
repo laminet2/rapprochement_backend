@@ -39,7 +39,7 @@ def generer_propositions(
         .get(pk=transaction_valorix.pk)
     )
 
-    if not valorix.statut_rapprochement:
+    if regle.types_valorix_ignorer and  (valorix.types in regle.types_valorix_ignorer):
         resultat["ignorees"] += 1
         return resultat
     
@@ -47,7 +47,7 @@ def generer_propositions(
         "creees": 0,
         "actualisees": 0,
         "ignorees": 0,
-        "propositions": [],
+        "propositions": []
     }
 
     if  valorix.types != regle.type_transaction_valorix:
@@ -141,7 +141,6 @@ def generer_propositions(
             score_correspondance=candidat["score_correspondance"],
             score_details=candidat["score_details"],
             ecart_montant=candidat["ecart_montant"],
-            regle=regle,
         )
 
         TransactionBancaireRapprochee.objects.create(
@@ -161,7 +160,7 @@ def generer_propositions(
 
 
 
-def generer_toutes_les_propositions(regles=None):
+def generer_toutes_les_propositions(regles):
     """
     Parcourt les transactions Valorix éligibles
     et génère leurs propositions selon les règles actives.
@@ -176,31 +175,19 @@ def generer_toutes_les_propositions(regles=None):
         "propositions": [],
     }
 
-    if not regles: 
-        regles = RegleMatching.objects.filter(default_regle=True)
 
-    for regle in regles:
-        transactions = TransactionValorix.objects.filter(
-            types=regle.type_transaction_valorix,statut_rapprochement=True
-        )
+    
+    transactions = TransactionValorix.objects()
 
-        # Par défaut, traiter uniquement les transactions
-        # Valorix créées aujourd'hui.
-        if not regle.prendre_valorix_anciennes:
-            transactions = transactions.filter(
-                created_at__date=aujourd_hui,
-            )
-
-        # Exclure les transactions déjà rapprochées et validées.
-        transactions = transactions.exclude(
-            pk__in=TransactionValorixRapprochee.objects.filter(
+    # Exclure les transactions déjà rapprochées et validées.
+    transactions = transactions.exclude(
+    pk__in=TransactionValorixRapprochee.objects.filter(
                 rapprochement__statut_validation=StatutValidation.VALIDE,
-            ).values("transaction_id")
-        )
+          ).values("transaction_id")
+    )
 
-        for transaction_valorix in transactions.iterator():
+    for transaction_valorix in transactions.iterator():
             bilan["transactions_traitees"] += 1
-
             resultat = generer_propositions(
                 transaction_valorix=transaction_valorix,
                 regle=regle

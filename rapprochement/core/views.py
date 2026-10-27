@@ -33,11 +33,11 @@ from valorix.models import TransactionValorix
 from releverBancaire.models import TransactionBancaire
 
 class GenererRapprochementsAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
-            bilan = generer_toutes_les_propositions()
+            bilan = generer_toutes_les_propositions(request.data.regle)
 
             # Les objets Rapprochement ne sont pas directement
             # sérialisables en JSON : on retourne un bilan simple.
@@ -80,7 +80,6 @@ class RapprochementQuerySetMixin:
     def get_queryset(self):
         return (
             Rapprochement.objects
-            .select_related("regle", "valide_par")
             .prefetch_related(
                 "transactions_bancaires__transaction__compte__banque",
                 "transactions_valorix__transaction",
@@ -94,7 +93,7 @@ class RapprochementListeAPIView(
     generics.ListAPIView,
 ):
     serializer_class = RapprochementSerializer
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -136,19 +135,18 @@ class RapprochementDetailAPIView(
     generics.RetrieveAPIView,
 ):
     serializer_class = RapprochementSerializer
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
     lookup_field = "id"
     lookup_url_kwarg = "pk"
 
 
 class ValiderRapprochementAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
         try:
             rapprochement = valider_rapprochement(
-                rapprochement_id=pk,
-                utilisateur=request.user,
+                rapprochement_id=pk
             )
         except (
             ValidationRapprochementError,
@@ -168,7 +166,7 @@ class ValiderRapprochementAPIView(APIView):
 
 
 class ActionMotifRapprochementAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
     action_service = None
 
     def post(self, request, pk):
@@ -178,7 +176,6 @@ class ActionMotifRapprochementAPIView(APIView):
         try:
             rapprochement = self.action_service(
                 rapprochement_id=pk,
-                utilisateur=request.user,
                 motif=serializer.validated_data["motif"],
             )
         except ActionRapprochementError as exc:
@@ -206,7 +203,7 @@ class AnnulerRapprochementAPIView(ActionMotifRapprochementAPIView):
 class RegleMatchingListeAPIView(generics.ListCreateAPIView):
     queryset = RegleMatching.objects.all().order_by("nom")
     serializer_class = RegleMatchingSerializer
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
 
 class RegleMatchingDetailAPIView(
@@ -214,12 +211,12 @@ class RegleMatchingDetailAPIView(
 ):
     queryset = RegleMatching.objects.all()
     serializer_class = RegleMatchingSerializer
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
     lookup_field = "id"
     lookup_url_kwarg = "pk"
 
 class ValiderTousRapprochementsAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def post(self, request):
         ids = list(
@@ -234,8 +231,7 @@ class ValiderTousRapprochementsAPIView(APIView):
         for rapprochement_id in ids:
             try:
                 valider_rapprochement(
-                    rapprochement_id=rapprochement_id,
-                    utilisateur=request.user,
+                    rapprochement_id=rapprochement_id
                 )
                 valides += 1
 
@@ -265,22 +261,12 @@ class ValiderTousRapprochementsAPIView(APIView):
         )
     
 class RapprochementStatistiquesAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    #permission_classes = [IsAuthenticated]
 
     def get(self, request):
         return Response({
             "transactions_valorix": (
                 TransactionValorix.objects.count()
-            ),
-            "transactions_valorix_a_rapprocher": (
-                TransactionValorix.objects.filter(
-                    statut_rapprochement=True
-                ).count()
-            ),
-            "transactions_valorix_exclues": (
-                TransactionValorix.objects.filter(
-                    statut_rapprochement=False
-                ).count()
             ),
             "transactions_bancaires": (
                 TransactionBancaire.objects.count()

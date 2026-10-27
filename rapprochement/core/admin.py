@@ -27,11 +27,10 @@ class RegleMatchingAdmin(admin.ModelAdmin):
         'fenetre_jours_apres',
         'tolerance_fixe',
         'tolerance_pourcentage',
-        'default_regle',
+    
         "prendre_banque_anciennes",
         "prendre_valorix_anciennes"
     )
-    list_editable = ('default_regle',)
     search_fields = ('nom',)
 
 
@@ -44,7 +43,6 @@ class RapprochementAdmin(admin.ModelAdmin):
         'score_correspondance',
         'ecart_montant',
         'regle',
-        'valide_par',
         'cree_le',
     )
     list_filter = (
@@ -56,12 +54,10 @@ class RapprochementAdmin(admin.ModelAdmin):
     search_fields = (
         'id',
         'commentaire',
-        'valide_par__username',
     )
     readonly_fields = (
         'cree_le',
         'valide_le',
-        'valide_par',
         'ecart_montant',
         'score_correspondance',
         'score_details',
@@ -76,6 +72,6 @@ class RapprochementAdmin(admin.ModelAdmin):
             'fields': ('score_correspondance', 'ecart_montant', 'score_details')
         }),
         ("Traçabilité", {
-            'fields': ('cree_le', 'valide_le', 'valide_par')
+            'fields': ('cree_le', 'valide_le')
         }),
     )
