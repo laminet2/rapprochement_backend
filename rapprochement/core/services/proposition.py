@@ -39,16 +39,17 @@ def generer_propositions(
         .get(pk=transaction_valorix.pk)
     )
 
-    if regle.types_valorix_ignorer and  (valorix.types in regle.types_valorix_ignorer):
-        resultat["ignorees"] += 1
-        return resultat
-    
     resultat = {
         "creees": 0,
         "actualisees": 0,
         "ignorees": 0,
         "propositions": []
     }
+
+    if regle.types_valorix_ignorer and  (valorix.types in regle.types_valorix_ignorer):
+        resultat["ignorees"] += 1
+        return resultat
+    
 
     if  valorix.types != regle.type_transaction_valorix:
         return resultat
@@ -160,7 +161,7 @@ def generer_propositions(
 
 
 
-def generer_toutes_les_propositions(regles):
+def generer_toutes_les_propositions(regle):
     """
     Parcourt les transactions Valorix éligibles
     et génère leurs propositions selon les règles actives.
@@ -177,7 +178,7 @@ def generer_toutes_les_propositions(regles):
 
 
     
-    transactions = TransactionValorix.objects()
+    transactions = TransactionValorix.objects.all()
 
     # Exclure les transactions déjà rapprochées et validées.
     transactions = transactions.exclude(

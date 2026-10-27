@@ -119,13 +119,6 @@ class Rapprochement(models.Model):
     # Explications du score : montant, date, référence, sens, etc.
     score_details = models.JSONField(default=dict, blank=True)
 
-    regle = models.ForeignKey(
-        RegleMatching,
-        on_delete=models.PROTECT,
-        related_name="rapprochements",
-        null=True,
-        blank=True,
-    )
 
     commentaire = models.TextField(blank=True)
 

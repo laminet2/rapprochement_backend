@@ -37,7 +37,7 @@ class GenererRapprochementsAPIView(APIView):
 
     def post(self, request):
         try:
-            bilan = generer_toutes_les_propositions(request.data.regle)
+            bilan = generer_toutes_les_propositions(request.data.get("regle"))
 
             # Les objets Rapprochement ne sont pas directement
             # sérialisables en JSON : on retourne un bilan simple.

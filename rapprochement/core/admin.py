@@ -42,14 +42,12 @@ class RapprochementAdmin(admin.ModelAdmin):
         'resultat',
         'score_correspondance',
         'ecart_montant',
-        'regle',
         'cree_le',
     )
     list_filter = (
         'statut_validation',
         'resultat',
-        'cree_le',
-        'regle',
+        'cree_le'
     )
     search_fields = (
         'id',
@@ -66,7 +64,7 @@ class RapprochementAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ("Informations Générales", {
-            'fields': ('statut_validation', 'resultat', 'regle', 'commentaire')
+            'fields': ('statut_validation', 'resultat', 'commentaire')
         }),
         ("Scores et Analyse", {
             'fields': ('score_correspondance', 'ecart_montant', 'score_details')
