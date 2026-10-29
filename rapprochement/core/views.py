@@ -1,316 +1,527 @@
-
-from uuid import UUID
-
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
-from django.shortcuts import get_object_or_404
-
-from rest_framework import generics, status
-from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from django.db.models import Count, Exists, F, OuterRef, Q
+from rest_framework import generics, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import Rapprochement, StatutValidation, ResultatMatching,RegleMatching
-from core.serializers import (
-    RapprochementSerializer,
-    MotifActionSerializer,
-    RegleMatchingSerializer
+from core.models import (
+    LigneDocumentRapprochee,
+    Rapprochement,
+    RegleMatching,
+    StatutValidation,
+    TransactionBancaireRapprochee,
+    TransactionValorixRapprochee,
 )
-from core.services.validation import (
-    valider_rapprochement,
-    ValidationRapprochementError,
+from core.serializers import (
+    DecisionGroupeeSerializer,
+    GenerationSerializer,
+    MotifSerializer,
+    RapprochementManuelSerializer,
+    RapprochementSerializer,
+    RegleMatchingSerializer,
+    SelectionManuelleSerializer,
+    SuppressionTransactionsSerializer,
 )
 from core.services.actions import (
-    rejeter_rapprochement,
-    annuler_rapprochement,
     ActionRapprochementError,
+    annuler_rapprochement,
+    rejeter_rapprochement,
 )
-
+from core.services.decision import annuler_propositions_bloquees, decision_groupee
+from core.services.manuel import (
+    EcartHorsToleranceError,
+    apercu_manuel,
+    creer_rapprochement_manuel,
+)
 from core.services.proposition import generer_toutes_les_propositions
-
-from valorix.models import TransactionValorix
+from core.services.regles import creer_regles_par_defaut
+from core.services.transactions import queryset_non_rapprochees, supprimer_transactions
+from core.services.validation import (
+    ConflitRapprochementError,
+    ValidationRapprochementError,
+    valider_rapprochement,
+)
+from documents.models import LigneDocument, TypeDocument
+from documents.serializers import LigneDocumentSerializer
 from releverBancaire.models import TransactionBancaire
-
-class GenererRapprochementsAPIView(APIView):
-    #permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-
-            regle_data = request.data.get("regle")
-
-            if not regle_data:
-                return Response(
-                    {"message": "La règle est obligatoire."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            regle = RegleMatching(
-             
-                type_transaction_valorix=regle_data["type_transaction_valorix"],
-                sens_transaction_document_cible=
-                    regle_data.get(
-                        "sens_transaction_document_cible",
-                        "CREDIT"
-                    ),
-                fenetre_jours_avant=
-                    regle_data.get("fenetre_jours_avant", 2),
-                fenetre_jours_apres=
-                    regle_data.get("fenetre_jours_apres", 2),
-                tolerance_fixe=
-                    regle_data.get("tolerance_fixe", 0),
-                tolerance_pourcentage=
-                    regle_data.get("tolerance_pourcentage", 0),
-                prendre_valorix_anciennes=
-                    regle_data.get("prendre_valorix_anciennes", True),
-                prendre_banque_anciennes=
-                    regle_data.get("prendre_banque_anciennes", True),
-                types_valorix_ignorer=
-                    regle_data.get("types_valorix_ignorer", []),
-            )
-
-            regle.full_clean()
-
-            bilan = generer_toutes_les_propositions(regle)
-
-            # Les objets Rapprochement ne sont pas directement
-            # sérialisables en JSON : on retourne un bilan simple.
-            return Response(
-                {
-                    "message": "Génération des propositions terminée.",
-                    "transactions_traitees": bilan["transactions_traitees"],
-                    "propositions_creees": bilan["creees"],
-                    "propositions_actualisees": bilan["actualisees"],
-                    "propositions_ignorees": bilan["ignorees"],
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        except Exception:
-            return Response(
-                {
-                    "message": (
-                        "Une erreur est survenue pendant "
-                        "la génération des propositions."
-                    )
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+from releverBancaire.serializers import TransactionBancaireSerializer
+from valorix.models import TransactionValorix
+from valorix.serializers import TransactionValorixSerializer
 
 
 def erreur_metier_vers_reponse(exc):
-    if isinstance(exc, DjangoValidationError):
-        detail = exc.messages
-    else:
-        detail = str(exc)
+    if isinstance(exc, EcartHorsToleranceError):
+        return Response(
+            {"detail": str(exc), "apercu": exc.apercu, "forcer_requis": True},
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    code = (
+        status.HTTP_409_CONFLICT
+        if isinstance(exc, ConflitRapprochementError)
+        else status.HTTP_400_BAD_REQUEST
+    )
+    return Response({"detail": str(exc)}, status=code)
 
-    return Response(
-        {"detail": detail},
-        status=status.HTTP_400_BAD_REQUEST,
+
+def _concurrence(modele_lien, rapprochement_ref="pk"):
+    """Exists : une AUTRE proposition en attente partage une transaction."""
+    mes_liens = modele_lien.objects.filter(
+        rapprochement=OuterRef(OuterRef("pk")),
+        transaction=OuterRef("transaction"),
+    )
+    return Exists(
+        modele_lien.objects.filter(
+            rapprochement__statut_validation=StatutValidation.PROPOSE
+        )
+        .exclude(rapprochement=OuterRef("pk"))
+        .filter(Exists(mes_liens))
+    )
+
+
+def _bloquee(modele_lien):
+    """Exists : une transaction est déjà dans un rapprochement VALIDE."""
+    mes_liens = modele_lien.objects.filter(
+        rapprochement=OuterRef(OuterRef("pk")),
+        transaction=OuterRef("transaction"),
+    )
+    return Exists(
+        modele_lien.objects.filter(
+            rapprochement__statut_validation=StatutValidation.VALIDE
+        )
+        .exclude(rapprochement=OuterRef("pk"))
+        .filter(Exists(mes_liens))
     )
 
 
 class RapprochementQuerySetMixin:
     def get_queryset(self):
         return (
-            Rapprochement.objects
+            Rapprochement.objects.annotate(
+                conflit_banque=_concurrence(TransactionBancaireRapprochee),
+                conflit_document=_concurrence(LigneDocumentRapprochee),
+                conflit_valorix=_concurrence(TransactionValorixRapprochee),
+                bloquee_banque=_bloquee(TransactionBancaireRapprochee),
+                bloquee_document=_bloquee(LigneDocumentRapprochee),
+                bloquee_valorix=_bloquee(TransactionValorixRapprochee),
+                nb_banque=Count("transactions_bancaires", distinct=True),
+                nb_document=Count("lignes_document", distinct=True),
+                nb_valorix=Count("transactions_valorix", distinct=True),
+            )
+            .annotate(nb_contre=F("nb_banque") + F("nb_document"))
+            .select_related("type_document")
             .prefetch_related(
                 "transactions_bancaires__transaction__compte__banque",
+                "lignes_document__transaction__type_document",
                 "transactions_valorix__transaction",
             )
-            .order_by("-cree_le")
         )
 
 
-class RapprochementListeAPIView(
-    RapprochementQuerySetMixin,
-    generics.ListAPIView,
-):
+class RapprochementListeAPIView(RapprochementQuerySetMixin, generics.ListAPIView):
+    """
+    Liste paginée (``page``, ``page_size``).
+
+    Filtres : statut_validation, resultat, origine, score_min, score_max,
+    type_rapprochement (1-1 | 1-N | N-1), type_valorix, source (banque),
+    type_document, lot_valorix, lot_banque, lot_document, q,
+    ordering (score, -score, cree_le, -cree_le).
+    """
+
     serializer_class = RapprochementSerializer
-    #permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        qs = super().get_queryset()
+        p = self.request.query_params
 
-        statut = self.request.query_params.get("statut")
-        resultat = self.request.query_params.get("resultat")
-        recherche = self.request.query_params.get("q", "").strip()
+        for champ in ("statut_validation", "resultat", "origine"):
+            if p.get(champ):
+                qs = qs.filter(**{champ: p[champ]})
+        if p.get("score_min"):
+            qs = qs.filter(score_correspondance__gte=p["score_min"])
+        if p.get("score_max"):
+            qs = qs.filter(score_correspondance__lte=p["score_max"])
+        if p.get("type_valorix"):
+            qs = qs.filter(transactions_valorix__transaction__types=p["type_valorix"])
+        if p.get("lot_valorix"):
+            qs = qs.filter(transactions_valorix__transaction__lot_id=p["lot_valorix"])
+        if p.get("lot_banque"):
+            qs = qs.filter(transactions_bancaires__transaction__lot_id=p["lot_banque"])
+        if p.get("lot_document"):
+            qs = qs.filter(lignes_document__transaction__lot_id=p["lot_document"])
+        if p.get("source") == "banque":
+            qs = qs.filter(type_document__isnull=True)
+        if p.get("type_document"):
+            qs = qs.filter(type_document_id=p["type_document"])
+        if p.get("q"):
+            q = p["q"]
+            qs = qs.filter(
+                Q(lignes_document__transaction__numero_compte__icontains=q)
+                | Q(transactions_bancaires__transaction__libelle_brut__icontains=q)
+                | Q(transactions_bancaires__transaction__reference_rapprochement__icontains=q)
+                | Q(transactions_valorix__transaction__numero_compte__icontains=q)
+                | Q(transactions_valorix__transaction__nomComplet__icontains=q)
+                | Q(transactions_valorix__transaction__references__icontains=q)
+            )
 
-        if statut:
-            if statut not in StatutValidation.values:
-                raise ValidationError({
-                    "statut": "Statut non reconnu."
-                })
-            queryset = queryset.filter(statut_validation=statut)
+        # Les filtres sur des jointures peuvent dupliquer des lignes.
+        qs = qs.distinct()
 
-        if resultat:
-            if resultat not in ResultatMatching.values:
-                raise ValidationError({
-                    "resultat": "Résultat non reconnu."
-                })
-            queryset = queryset.filter(resultat=resultat)
+        type_r = p.get("type_rapprochement")
+        if type_r == "1-1":
+            qs = qs.filter(nb_contre=1, nb_valorix=1)
+        elif type_r == "1-N":
+            qs = qs.filter(nb_contre=1, nb_valorix__gt=1)
+        elif type_r == "N-1":
+            qs = qs.filter(nb_contre__gt=1, nb_valorix=1)
 
-        if recherche:
-            filtres = Q(commentaire__icontains=recherche)
-
-            try:
-                identifiant = UUID(recherche)
-                filtres |= Q(id=identifiant)
-            except (ValueError, TypeError):
-                pass
-
-            queryset = queryset.filter(filtres)
-
-        return queryset
+        ordre = {
+            "score": ("score_correspondance", "-cree_le"),
+            "-score": ("-score_correspondance", "-cree_le"),
+            "cree_le": ("cree_le",),
+            "-cree_le": ("-cree_le",),
+        }.get(p.get("ordering"), ("-cree_le",))
+        return qs.order_by(*ordre)
 
 
-class RapprochementDetailAPIView(
-    RapprochementQuerySetMixin,
-    generics.RetrieveAPIView,
-):
+class RapprochementDetailAPIView(RapprochementQuerySetMixin, generics.RetrieveAPIView):
     serializer_class = RapprochementSerializer
-    #permission_classes = [IsAuthenticated]
-    lookup_field = "id"
-    lookup_url_kwarg = "pk"
 
+
+# ------------------------------------------------------------------
+# Génération
+# ------------------------------------------------------------------
+
+class GenererRapprochementsAPIView(APIView):
+    """
+    Génère les propositions en appliquant les règles actives (une par type).
+
+    Corps (tout est optionnel) :
+      lot_valorix: [uuid], lot_banque: [uuid], lot_document: [uuid],
+      types: ["DEPOT_CHEQUE", ...],
+      inclure_regroupements: true
+    """
+
+    def post(self, request):
+        serializer = GenerationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+
+        bilan = generer_toutes_les_propositions(
+            lot_valorix_ids=v["lot_valorix"] or None,
+            lot_banque_ids=v["lot_banque"] or None,
+            lot_document_ids=v["lot_document"] or None,
+            types=v["types"] or None,
+            inclure_regroupements=v["inclure_regroupements"],
+        )
+        return Response(bilan, status=status.HTTP_200_OK)
+
+
+# ------------------------------------------------------------------
+# Actions unitaires et groupées
+# ------------------------------------------------------------------
 
 class ValiderRapprochementAPIView(APIView):
-    #permission_classes = [IsAuthenticated]
-
     def post(self, request, pk):
         try:
-            rapprochement = valider_rapprochement(
-                rapprochement_id=pk
-            )
-        except (
-            ValidationRapprochementError,
-            DjangoValidationError,
-        ) as exc:
+            rapprochement = valider_rapprochement(pk, request.user)
+        except ValidationRapprochementError as exc:
             return erreur_metier_vers_reponse(exc)
-        except Rapprochement.DoesNotExist:
-            return Response(
-                {"detail": "Rapprochement introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         return Response(
-            RapprochementSerializer(rapprochement).data,
-            status=status.HTTP_200_OK,
+            {"detail": "Rapprochement validé.", "id": str(rapprochement.pk)}
         )
 
 
 class ActionMotifRapprochementAPIView(APIView):
-    #permission_classes = [IsAuthenticated]
     action_service = None
+    message = ""
 
     def post(self, request, pk):
-        serializer = MotifActionSerializer(data=request.data)
+        serializer = MotifSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         try:
             rapprochement = self.action_service(
                 rapprochement_id=pk,
+                utilisateur=request.user,
                 motif=serializer.validated_data["motif"],
             )
         except ActionRapprochementError as exc:
-            return erreur_metier_vers_reponse(exc)
-        except Rapprochement.DoesNotExist:
-            return Response(
-                {"detail": "Rapprochement introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
-            RapprochementSerializer(rapprochement).data,
-            status=status.HTTP_200_OK,
+            {
+                "detail": self.message,
+                "id": str(rapprochement.pk),
+                "statut_validation": rapprochement.statut_validation,
+            }
         )
 
 
 class RejeterRapprochementAPIView(ActionMotifRapprochementAPIView):
     action_service = staticmethod(rejeter_rapprochement)
+    message = "Rapprochement rejeté."
 
 
 class AnnulerRapprochementAPIView(ActionMotifRapprochementAPIView):
     action_service = staticmethod(annuler_rapprochement)
+    message = "Rapprochement annulé."
 
 
+class DecisionGroupeeAPIView(APIView):
+    """
+    Revue groupée : rejette ``ids_rejetes`` puis valide TOUT le reste.
+
+    Corps : {"ids_rejetes": [...], "motif_rejet": "...",
+             "lot_valorix": [...], "lot_banque": [...], "ids": [...]}
+    Les propositions en conflit restent en attente et sont listées dans
+    ``conflits``.
+    """
+
+    def post(self, request):
+        serializer = DecisionGroupeeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+        bilan = decision_groupee(
+            ids_rejetes=v["ids_rejetes"],
+            motif_rejet=v["motif_rejet"],
+            ids=v["ids"],
+            lot_valorix_ids=v["lot_valorix"] or None,
+            lot_banque_ids=v["lot_banque"] or None,
+            lot_document_ids=v["lot_document"] or None,
+            valider_le_reste=v["valider_le_reste"],
+            utilisateur=request.user,
+        )
+        return Response(bilan)
 
 
 class ValiderTousRapprochementsAPIView(APIView):
-    #permission_classes = [IsAuthenticated]
+    """Conservé : valide toutes les propositions en attente."""
 
     def post(self, request):
-        ids = list(
-            Rapprochement.objects
-            .filter(statut_validation=StatutValidation.PROPOSE)
-            .values_list("id", flat=True)
-        )
+        return Response(decision_groupee(utilisateur=request.user))
 
-        valides = 0
-        erreurs = []
 
-        for rapprochement_id in ids:
-            try:
-                valider_rapprochement(
-                    rapprochement_id=rapprochement_id
+class NettoyerBloqueesAPIView(APIView):
+    """Annule les propositions devenues impossibles (transaction déjà rapprochée)."""
+
+    def post(self, request):
+        ids = annuler_propositions_bloquees(request.user)
+        return Response({"annulees": ids, "nombre": len(ids)})
+
+
+# ------------------------------------------------------------------
+# Rapprochement manuel
+# ------------------------------------------------------------------
+
+class ApercuManuelAPIView(APIView):
+    """Totaux / écart / tolérance d'une sélection, sans rien enregistrer."""
+
+    def post(self, request):
+        serializer = SelectionManuelleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+        try:
+            return Response(
+                apercu_manuel(v["ids_contrepartie"], v["transactions_valorix"], v["type_document"])
+            )
+        except ValidationRapprochementError as exc:
+            return erreur_metier_vers_reponse(exc)
+
+
+class RapprochementManuelAPIView(APIView):
+    """Crée directement un rapprochement validé (1-1, 1-N, N-1 ou N-M)."""
+
+    def post(self, request):
+        serializer = RapprochementManuelSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+        try:
+            rapprochement = creer_rapprochement_manuel(
+                v["ids_contrepartie"], v["transactions_valorix"],
+                motif=v["motif"], forcer=v["forcer"], type_document_id=v["type_document"],
+            )
+        except ValidationRapprochementError as exc:
+            return erreur_metier_vers_reponse(exc)
+
+        donnees = RapprochementSerializer(
+            RapprochementQuerySetMixin.get_queryset(self).get(pk=rapprochement.pk)
+        ).data
+        return Response(donnees, status=status.HTTP_201_CREATED)
+
+
+# ------------------------------------------------------------------
+# Transactions non rapprochées
+# ------------------------------------------------------------------
+
+class NonRapprocheesAPIView(generics.ListAPIView):
+    """
+    GET ?source=banque|valorix|document (défaut banque), page, page_size, q,
+    date_min, date_max, type (Valorix / bancaire), type_document (document),
+    compte (banque), lot, sens.
+    """
+
+    def get_serializer_class(self):
+        source = self.request.query_params.get("source")
+        if source == "valorix":
+            return TransactionValorixSerializer
+        if source == "document":
+            return LigneDocumentSerializer
+        return TransactionBancaireSerializer
+
+    def get_queryset(self):
+        p = self.request.query_params
+        source = p.get("source", "banque")
+        valorix = source == "valorix"
+        qs = queryset_non_rapprochees(source if source in ("valorix", "document") else "banque")
+
+        if source == "document":
+            qs = qs.select_related("type_document").order_by("-date_transaction", "-id")
+            if p.get("type_document"):
+                qs = qs.filter(type_document_id=p["type_document"])
+            if p.get("date_min"):
+                qs = qs.filter(date_transaction__gte=p["date_min"])
+            if p.get("date_max"):
+                qs = qs.filter(date_transaction__lte=p["date_max"])
+            if p.get("q"):
+                qs = qs.filter(numero_compte__icontains=p["q"])
+        elif valorix:
+            qs = qs.order_by("-date_transaction", "-id")
+            if p.get("type"):
+                qs = qs.filter(types=p["type"])
+            if p.get("date_min"):
+                qs = qs.filter(date_transaction__date__gte=p["date_min"])
+            if p.get("date_max"):
+                qs = qs.filter(date_transaction__date__lte=p["date_max"])
+            if p.get("q"):
+                q = p["q"]
+                qs = qs.filter(
+                    Q(numero_compte__icontains=q) | Q(nomComplet__icontains=q)
+                    | Q(references__icontains=q) | Q(numero_transaction__icontains=q)
                 )
-                valides += 1
-
-            except (
-                ValidationRapprochementError,
-                DjangoValidationError,
-                Rapprochement.DoesNotExist,
-            ) as exc:
-                detail = (
-                    exc.messages
-                    if isinstance(exc, DjangoValidationError)
-                    else str(exc)
+        else:
+            qs = qs.select_related("compte", "compte__banque").order_by(
+                "-date_transaction", "-id"
+            )
+            if p.get("type"):
+                qs = qs.filter(type_transaction=p["type"])
+            if p.get("compte"):
+                qs = qs.filter(compte_id=p["compte"])
+            if p.get("date_min"):
+                qs = qs.filter(date_transaction__gte=p["date_min"])
+            if p.get("date_max"):
+                qs = qs.filter(date_transaction__lte=p["date_max"])
+            if p.get("q"):
+                qs = qs.filter(
+                    Q(libelle_brut__icontains=p["q"])
+                    | Q(reference_rapprochement__icontains=p["q"])
                 )
-                erreurs.append({
-                    "id": str(rapprochement_id),
-                    "detail": detail,
-                })
+
+        if p.get("lot"):
+            qs = qs.filter(lot_id=p["lot"])
+        if p.get("sens") == "DEBIT":
+            qs = qs.filter(debit__gt=0)
+        elif p.get("sens") == "CREDIT":
+            qs = qs.filter(credit__gt=0)
+        return qs
+
+
+class SupprimerNonRapprocheesAPIView(APIView):
+    """
+    POST {"source": "banque"|"valorix", "ids": [...]}
+
+    Refuse les transactions déjà rapprochées ; supprime les autres ainsi que
+    les propositions (non validées) qui les contiennent.
+    """
+
+    def post(self, request):
+        serializer = SuppressionTransactionsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+
+        try:
+            ids = [int(i) for i in v["ids"]] if v["source"] == "banque" else v["ids"]
+        except ValueError:
+            return Response(
+                {"detail": "Identifiants invalides."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        resultat = supprimer_transactions(v["source"], ids)
+        return Response(resultat)
+
+
+# ------------------------------------------------------------------
+# Statistiques
+# ------------------------------------------------------------------
+
+class RapprochementStatistiquesAPIView(APIView):
+    def get(self, request):
+        par_statut = {
+            ligne["statut_validation"]: ligne["total"]
+            for ligne in Rapprochement.objects.values("statut_validation")
+            .annotate(total=Count("id"))
+        }
+        par_resultat = {
+            ligne["resultat"]: ligne["total"]
+            for ligne in Rapprochement.objects.values("resultat")
+            .annotate(total=Count("id"))
+        }
+
+        total_b = TransactionBancaire.objects.count()
+        total_v = TransactionValorix.objects.count()
+        non_b = queryset_non_rapprochees("banque").count()
+        non_v = queryset_non_rapprochees("valorix").count()
+
+        def taux(total, non):
+            return round(100 * (total - non) / total, 1) if total else 0
+
+        documents = []
+        for type_doc in TypeDocument.objects.filter(actif=True):
+            total_d = LigneDocument.objects.filter(type_document=type_doc).count()
+            non_d = queryset_non_rapprochees("document").filter(type_document=type_doc).count()
+            documents.append(
+                {
+                    "id": type_doc.id, "nom": type_doc.nom, "total": total_d,
+                    "non_rapprochees": non_d, "taux_rapprochement": taux(total_d, non_d),
+                }
+            )
 
         return Response(
             {
-                "total_a_traiter": len(ids),
-                "valides": valides,
-                "echecs": len(erreurs),
-                "erreurs": erreurs,
-            },
-            status=status.HTTP_200_OK,
+                "documents": documents,
+                "total": sum(par_statut.values()),
+                "par_statut": par_statut,
+                "par_resultat": par_resultat,
+                "propositions_en_attente": par_statut.get(StatutValidation.PROPOSE, 0),
+                "rapprochements_valides": par_statut.get(StatutValidation.VALIDE, 0),
+                "transactions_banque": {
+                    "total": total_b,
+                    "non_rapprochees": non_b,
+                    "taux_rapprochement": taux(total_b, non_b),
+                },
+                "transactions_valorix": {
+                    "total": total_v,
+                    "non_rapprochees": non_v,
+                    "taux_rapprochement": taux(total_v, non_v),
+                },
+            }
         )
-    
-class RapprochementStatistiquesAPIView(APIView):
-    #permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        return Response({
-            "transactions_valorix": (
-                TransactionValorix.objects.count()
-            ),
-            "transactions_bancaires": (
-                TransactionBancaire.objects.count()
-            ),
-            "propositions_en_attente": (
-                Rapprochement.objects.filter(
-                    statut_validation=StatutValidation.PROPOSE
-                ).count()
-            ),
-            "rapprochements_valides": (
-                Rapprochement.objects.filter(
-                    statut_validation=StatutValidation.VALIDE
-                ).count()
-            ),
-            "rapprochements_rejetes": (
-                Rapprochement.objects.filter(
-                    statut_validation=StatutValidation.REJETE
-                ).count()
-            ),
-            "rapprochements_annules": (
-                Rapprochement.objects.filter(
-                    statut_validation=StatutValidation.ANNULE
-                ).count()
-            ),
-        })
+
+# ------------------------------------------------------------------
+# Règles (une par type de transaction)
+# ------------------------------------------------------------------
+
+class RegleMatchingViewSet(viewsets.ModelViewSet):
+    queryset = RegleMatching.objects.select_related("type_document").all()
+    serializer_class = RegleMatchingSerializer
+    pagination_class = None
+
+    @action(detail=False, methods=["post"], url_path="par-defaut")
+    def par_defaut(self, request):
+        """Crée une règle par défaut pour chaque type qui n'en a pas."""
+        creees = creer_regles_par_defaut()
+        return Response(
+            {
+                "creees": [r.type_transaction_valorix for r in creees],
+                "regles": RegleMatchingSerializer(RegleMatching.objects.all(), many=True).data,
+            },
+            status=status.HTTP_201_CREATED if creees else status.HTTP_200_OK,
+        )

@@ -1,179 +1,132 @@
+from datetime import date
 
-# core/tests/test_validation.py
-
-from datetime import date, datetime
-from decimal import Decimal
-from uuid import uuid4
-
-from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from core.models import (
-    Rapprochement,
-    RegleMatching,
-    ResultatMatching,
-    StatutValidation,
-    TransactionBancaireRapprochee,
-    TransactionValorixRapprochee,
+from core.models import Rapprochement, StatutValidation
+from core.services.actions import (
+    ActionRapprochementError,
+    annuler_rapprochement,
+    rejeter_rapprochement,
 )
+from core.services.proposition import generer_toutes_les_propositions
 from core.services.validation import (
+    ConflitRapprochementError,
     ValidationRapprochementError,
     valider_rapprochement,
 )
-from releverBancaire.models import (
-    Banque,
-    CompteBancaire,
-    TransactionBancaire,
-)
-from valorix.models import TransactionValorix
+
+from .factories import creer_regle, tx_banque, tx_valorix
 
 
-class ValidationRapprochementTests(TestCase):
-
+class ValidationTests(TestCase):
     def setUp(self):
-        User = get_user_model()
+        self.regle = creer_regle(avant=2, apres=2)
+        self.b = tx_banque(date(2026, 10, 5), 1000, "CREDIT")
+        self.v = tx_valorix(date(2026, 10, 5), 1000, "DEBIT")
+        generer_toutes_les_propositions()
+        self.r = Rapprochement.objects.get()
 
-        self.utilisateur = User.objects.create_user(
-            username="test_rapprochement",
-            password="test-password",
-        )
+    def test_validation_ok(self):
+        r = valider_rapprochement(self.r.pk)
+        self.assertEqual(r.statut_validation, StatutValidation.VALIDE)
+        self.assertIsNotNone(r.valide_le)
 
-        self.banque = Banque.objects.create(
-            nom="Ecobank Test",
-        )
-
-        self.compte_bancaire = CompteBancaire.objects.create(
-            banque=self.banque,
-            numero_compte="COMPTE-001",
-            devise="XOF",
-        )
-
-        self.regle = RegleMatching.objects.create(
-            nom="Règle dépôt chèque",
-            type_transaction_valorix="DEPOT_CHEQUE",
-            fenetre_jours_avant=3,
-            fenetre_jours_apres=3,
-            tolerance_fixe=Decimal("100.00"),
-            tolerance_pourcentage=Decimal("1.00"),
-            active=True,
-        )
-
-        self.transaction_valorix = TransactionValorix.objects.create(
-            id=uuid4(),
-            numero_transaction="VAL-001",
-            date_transaction=datetime(2026, 10, 15, 10, 0),
-            numero_compte="CLIENT-001",
-            nomComplet="Client Test",
-            debit=None,
-            credit=Decimal("10000.00"),
-            references="9723769",
-            types="DEPOT_CHEQUE",
-            references_rapprochement="",
-        )
-
-        self.transaction_bancaire = TransactionBancaire.objects.create(
-            compte=self.compte_bancaire,
-            date_transaction=date(2026, 10, 16),
-            date_valeur=date(2026, 10, 16),
-            reference_rapprochement="9723769",
-            libelle_brut="DEPOT CHEQUE CLIENT TEST",
-            debit=None,
-            credit=Decimal("10000.00"),
-            solde_apres_operation=Decimal("50000.00"),
-            type_transaction="AUTRE",
-        )
-
-    def creer_proposition(
-        self,
-        transaction_valorix=None,
-        transaction_bancaire=None,
-        statut=StatutValidation.PROPOSE,
-    ):
-        """Crée une proposition avec ses deux transactions sources."""
-
-        rapprochement = Rapprochement.objects.create(
-            statut_validation=statut,
-            resultat=ResultatMatching.CORRESPONDANCE,
-            score_correspondance=100,
-            ecart_montant=Decimal("0.00"),
-            regle=self.regle,
-            score_details={"test": True},
-        )
-
-        TransactionBancaireRapprochee.objects.create(
-            rapprochement=rapprochement,
-            transaction=(
-                transaction_bancaire or self.transaction_bancaire
-            ),
-        )
-
-        TransactionValorixRapprochee.objects.create(
-            rapprochement=rapprochement,
-            transaction=(
-                transaction_valorix or self.transaction_valorix
-            ),
-        )
-
-        return rapprochement
-
-    def test_valider_proposition_correcte(self):
-        """Une proposition correcte doit pouvoir être validée."""
-
-        proposition = self.creer_proposition()
-
-        resultat = valider_rapprochement(
-            rapprochement_id=proposition.pk,
-            utilisateur=self.utilisateur,
-        )
-
-        resultat.refresh_from_db()
-
+    def test_validation_sans_utilisateur_authentifie(self):
+        """Les permissions sont désactivées volontairement pendant le développement."""
         self.assertEqual(
-            resultat.statut_validation,
-            StatutValidation.VALIDE,
-        )
-        self.assertEqual(resultat.valide_par, self.utilisateur)
-        self.assertIsNotNone(resultat.valide_le)
-
-    def test_empecher_double_rapprochement_bancaire(self):
-        """Une transaction bancaire déjà validée ne peut être réutilisée."""
-
-        self.creer_proposition(
-            statut=StatutValidation.VALIDE,
+            valider_rapprochement(self.r.pk, None).statut_validation, "VALIDE"
         )
 
-        autre_valorix = TransactionValorix.objects.create(
-            id=uuid4(),
-            numero_transaction="VAL-002",
-            date_transaction=datetime(2026, 10, 15, 11, 0),
-            numero_compte="CLIENT-002",
-            nomComplet="Autre Client",
-            debit=None,
-            credit=Decimal("10000.00"),
-            references="9723769",
-            types="DEPOT_CHEQUE",
-            references_rapprochement="",
-        )
-
-        proposition = self.creer_proposition(
-            transaction_valorix=autre_valorix,
-        )
-
+    def test_deja_valide_refuse(self):
+        valider_rapprochement(self.r.pk)
         with self.assertRaises(ValidationRapprochementError):
-            valider_rapprochement(
-                rapprochement_id=proposition.pk,
-                utilisateur=self.utilisateur,
-            )
+            valider_rapprochement(self.r.pk)
 
-    def test_refuser_proposition_deja_validee(self):
-        """Une proposition déjà validée ne doit pas être validée à nouveau."""
+    def test_revalidation_detecte_montant_modifie(self):
+        self.b.credit = 1500
+        self.b.save()
+        with self.assertRaises(ValidationRapprochementError) as ctx:
+            valider_rapprochement(self.r.pk)
+        self.assertIn("tolérance", str(ctx.exception))
 
-        proposition = self.creer_proposition(
-            statut=StatutValidation.VALIDE,
-        )
-
+    def test_revalidation_detecte_date_modifiee(self):
+        self.b.date_transaction = date(2026, 10, 20)
+        self.b.save()
         with self.assertRaises(ValidationRapprochementError):
-            valider_rapprochement(
-                rapprochement_id=proposition.pk,
-                utilisateur=self.utilisateur,
-            )
+            valider_rapprochement(self.r.pk)
+
+    def test_snapshot_fait_foi_meme_si_la_regle_change(self):
+        self.regle.tolerance_fixe = 0
+        self.regle.fenetre_jours_avant = 0
+        self.regle.fenetre_jours_apres = 0
+        self.regle.save()
+        self.b.date_transaction = date(2026, 10, 6)  # dans la fenêtre du snapshot (2)
+        self.b.save()
+        valider_rapprochement(self.r.pk)  # ne doit pas échouer
+
+    def test_proposition_ancienne_sans_snapshot_utilise_la_regle_du_type(self):
+        Rapprochement.objects.filter(pk=self.r.pk).update(regle_snapshot={})
+        r = valider_rapprochement(self.r.pk)
+        self.assertEqual(r.regle_snapshot["type_transaction_valorix"], "DEPOT_CHEQUE")
+
+    def test_sans_regle_ni_snapshot_refuse(self):
+        Rapprochement.objects.filter(pk=self.r.pk).update(regle_snapshot={})
+        self.regle.delete()
+        with self.assertRaises(ValidationRapprochementError):
+            valider_rapprochement(self.r.pk)
+
+    def test_conflit_avec_un_rapprochement_deja_valide(self):
+        v2 = tx_valorix(date(2026, 10, 5), 1000, "DEBIT")
+        generer_toutes_les_propositions()
+        autre = Rapprochement.objects.exclude(pk=self.r.pk).get()
+        valider_rapprochement(self.r.pk)
+        with self.assertRaises(ConflitRapprochementError):
+            valider_rapprochement(autre.pk)
+
+    def test_validation_groupe_1_N(self):
+        regle = self.regle
+        b = tx_banque(date(2026, 10, 9), 300, "CREDIT")
+        tx_valorix(date(2026, 10, 9), 100, "DEBIT")
+        tx_valorix(date(2026, 10, 9), 200, "DEBIT")
+        generer_toutes_les_propositions()
+        groupe = Rapprochement.objects.get(score_details__type_rapprochement="1-N")
+        valider_rapprochement(groupe.pk)
+        groupe.refresh_from_db()
+        self.assertEqual(groupe.statut_validation, "VALIDE")
+        self.assertEqual(groupe.transactions_valorix.count(), 2)
+
+
+class ActionTests(TestCase):
+    def setUp(self):
+        creer_regle()
+        tx_banque(date(2026, 10, 5), 1000, "CREDIT")
+        tx_valorix(date(2026, 10, 5), 1000, "DEBIT")
+        generer_toutes_les_propositions()
+        self.r = Rapprochement.objects.get()
+
+    def test_rejet_sans_utilisateur_authentifie(self):
+        r = rejeter_rapprochement(self.r.pk, None, "doublon")
+        self.assertEqual(r.statut_validation, "REJETE")
+        self.assertIn("anonyme", r.commentaire)
+
+    def test_motif_obligatoire(self):
+        with self.assertRaises(ActionRapprochementError):
+            rejeter_rapprochement(self.r.pk, None, "  ")
+
+    def test_rejeter_une_validation_est_interdit(self):
+        valider_rapprochement(self.r.pk)
+        with self.assertRaises(ActionRapprochementError):
+            rejeter_rapprochement(self.r.pk, None, "erreur")
+
+    def test_annuler_un_rapprochement_valide_libere_les_transactions(self):
+        valider_rapprochement(self.r.pk)
+        r = annuler_rapprochement(self.r.pk, None, "saisie erronée")
+        self.assertEqual(r.statut_validation, "ANNULE")
+        self.assertIsNone(r.valide_le)
+        from core.services.transactions import queryset_non_rapprochees
+        self.assertEqual(queryset_non_rapprochees("banque").count(), 1)
+
+    def test_annuler_un_rejet_est_interdit(self):
+        rejeter_rapprochement(self.r.pk, None, "x")
+        with self.assertRaises(ActionRapprochementError):
+            annuler_rapprochement(self.r.pk, None, "y")

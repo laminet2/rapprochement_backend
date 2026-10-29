@@ -1,215 +1,178 @@
+"""Validation d'un rapprochement (1-1, 1-N, N-1) avec revérification complète."""
 
-from datetime import timedelta
-
-from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
 from core.models import (
+    LigneDocumentRapprochee,
     Rapprochement,
-    StatutValidation,
     ResultatMatching,
+    StatutValidation,
     TransactionBancaireRapprochee,
     TransactionValorixRapprochee,
 )
-from core.services.candidats import obtenir_montant_et_sens
+from core.services.candidats import construire_ligne
+from core.services.regles import parametres_du_rapprochement
 from core.services.tolerance import evaluer_ecart
+from documents.models import LigneDocument
+from releverBancaire.models import TransactionBancaire
+from valorix.models import TransactionValorix
 
 
 class ValidationRapprochementError(Exception):
-    """Erreur métier pendant la validation d'un rapprochement."""
+    """Le rapprochement ne peut pas être validé."""
+
+
+class ConflitRapprochementError(ValidationRapprochementError):
+    """Une transaction est déjà utilisée par un rapprochement validé."""
+
+
+def verifier_fenetres(lignes_banque, lignes_valorix, params):
+    """True si chaque paire (banque, Valorix) respecte la fenêtre de dates."""
+    for b in lignes_banque:
+        for v in lignes_valorix:
+            ecart = (b.date - v.date).days
+            if ecart < -params.fenetre_jours_avant or ecart > params.fenetre_jours_apres:
+                return False
+    return True
+
+
+def evaluer_ensemble(lignes_banque, lignes_valorix, params):
+    """Évalue les sommes des montants selon la règle (tolérance)."""
+    total_b = sum((l.montant for l in lignes_banque), 0)
+    total_v = sum((l.montant for l in lignes_valorix), 0)
+    return evaluer_ecart(
+        montant_banque=total_b,
+        montant_valorix=total_v,
+        tolerance_fixe=params.tolerance_fixe,
+        tolerance_pourcentage=params.tolerance_pourcentage,
+    )
+
+
+def _lignes(transactions, nom):
+    lignes = []
+    for tx in transactions:
+        ligne = construire_ligne(tx)
+        if ligne is None:
+            raise ValidationRapprochementError(
+                f"La transaction {nom} {tx.pk} a un montant ambigu ou nul."
+            )
+        lignes.append(ligne)
+    return lignes
 
 
 @transaction.atomic
-def valider_rapprochement(
-    rapprochement_id
-):
+def valider_rapprochement(rapprochement_id, utilisateur=None):
     """
-    Valide une proposition 1-1 après vérifications.
-
-    - Verrouille la proposition et les transactions concernées.
-    - Vérifie que la proposition est encore en attente.
-    - Vérifie que les deux transactions existent et ne sont pas
-      déjà utilisées dans un autre rapprochement validé.
-    - Revérifie la date et la tolérance de montant.
-    - Enregistre l'utilisateur et l'heure de validation.
-
-    Aucun rapprochement n'est validé automatiquement par le score.
+    Valide une proposition après avoir revérifié, sur les données actuelles :
+    statut, existence des liens, absence de conflit, règle, sens bancaire,
+    fenêtres de dates et tolérance sur la somme des montants.
     """
-
-    # Verrouiller la proposition pour éviter deux validations simultanées.
     try:
-        rapprochement = (
-            Rapprochement.objects
-            .select_for_update()
-            .get(pk=rapprochement_id)
+        rapprochement = Rapprochement.objects.select_for_update().get(
+            pk=rapprochement_id
         )
     except Rapprochement.DoesNotExist:
-        raise ValidationRapprochementError(
-            "Cette proposition de rapprochement n'existe pas."
-        )
+        raise ValidationRapprochementError("Rapprochement introuvable.")
 
     if rapprochement.statut_validation != StatutValidation.PROPOSE:
         raise ValidationRapprochementError(
             "Seule une proposition en attente peut être validée."
         )
-
     if rapprochement.resultat != ResultatMatching.CORRESPONDANCE:
         raise ValidationRapprochementError(
-            "Le résultat de cette proposition ne permet pas sa validation."
+            "Ce rapprochement n'est pas une correspondance valide."
         )
 
-    if rapprochement.regle is None:
-        raise ValidationRapprochementError(
-            "Aucune règle de rapprochement n'est associée à cette proposition."
-        )
+    est_document = rapprochement.type_document_id is not None
+    lien_c = LigneDocumentRapprochee if est_document else TransactionBancaireRapprochee
+    modele_c = LigneDocument if est_document else TransactionBancaire
+    nom_c = "du document" if est_document else "bancaire"
 
-    # Cette implémentation traite uniquement le rapprochement 1-1.
-    liens_bancaires = list(
-        TransactionBancaireRapprochee.objects.filter(
-            rapprochement=rapprochement
-        ).values_list("transaction_id", flat=True)
+    ids_b = list(
+        lien_c.objects.filter(rapprochement=rapprochement)
+        .order_by("transaction_id").values_list("transaction_id", flat=True)
     )
+    ids_v = list(
+        TransactionValorixRapprochee.objects.filter(rapprochement=rapprochement)
+        .order_by("transaction_id").values_list("transaction_id", flat=True)
+    )
+    if not ids_b or not ids_v:
+        raise ValidationRapprochementError(
+            "Le rapprochement doit contenir au moins une ligne de contrepartie "
+            "et une transaction Valorix."
+        )
 
-    liens_valorix = list(
+    # Verrouillage dans un ordre stable (évite les inter-blocages).
+    banques = list(modele_c.objects.select_for_update().filter(pk__in=ids_b).order_by("pk"))
+    valorix = list(TransactionValorix.objects.select_for_update().filter(pk__in=ids_v).order_by("pk"))
+
+    if (
+        lien_c.objects.filter(
+            transaction_id__in=ids_b,
+            rapprochement__statut_validation=StatutValidation.VALIDE,
+        ).exclude(rapprochement=rapprochement).exists()
+    ):
+        raise ConflitRapprochementError(
+            f"Une ligne {nom_c} de ce rapprochement est déjà rapprochée."
+        )
+    if (
         TransactionValorixRapprochee.objects.filter(
-            rapprochement=rapprochement
-        ).values_list("transaction_id", flat=True)
-    )
+            transaction_id__in=ids_v,
+            rapprochement__statut_validation=StatutValidation.VALIDE,
+        ).exclude(rapprochement=rapprochement).exists()
+    ):
+        raise ConflitRapprochementError(
+            "Une transaction Valorix de ce rapprochement est déjà rapprochée."
+        )
 
-    if len(liens_bancaires) != 1 or len(liens_valorix) != 1:
+    lignes_b = _lignes(banques, nom_c)
+    lignes_v = _lignes(valorix, "Valorix")
+
+    types = {l.tx.types for l in lignes_v}
+    if len(types) != 1:
         raise ValidationRapprochementError(
-            "La proposition doit contenir exactement une transaction "
-            "bancaire et une transaction Valorix."
+            "Les transactions Valorix doivent toutes avoir le même type."
+        )
+    type_tx = next(iter(types))
+
+    params = parametres_du_rapprochement(rapprochement, type_tx)
+    if params is None:
+        raise ValidationRapprochementError(
+            f"Aucune règle de rapprochement pour le type {type_tx}."
+        )
+    if params.type_transaction_valorix != type_tx:
+        raise ValidationRapprochementError(
+            "Le type des transactions Valorix ne correspond pas à la règle."
         )
 
-    banque_id = liens_bancaires[0]
-    valorix_id = liens_valorix[0]
-
-    # Verrouiller les sources dans un ordre stable pour réduire
-    # le risque de conflits entre validations concurrentes.
-    from releverBancaire.models import TransactionBancaire
-    from valorix.models import TransactionValorix
-
-    try:
-        transaction_banque = (
-            TransactionBancaire.objects
-            .select_for_update()
-            .get(pk=banque_id)
+    if any(l.sens != params.sens_transaction_document_cible for l in lignes_b):
+        raise ValidationRapprochementError(
+            "Le sens des lignes de contrepartie ne correspond pas à celui "
+            "attendu par la règle."
         )
-        transaction_valorix = (
-            TransactionValorix.objects
-            .select_for_update()
-            .get(pk=valorix_id)
-        )
-    except (
-        TransactionBancaire.DoesNotExist,
-        TransactionValorix.DoesNotExist,
+
+    # Les fenêtres ne sont vérifiées que pour les groupes « 1 contre N ».
+    if (len(lignes_b) == 1 or len(lignes_v) == 1) and not verifier_fenetres(
+        lignes_b, lignes_v, params
     ):
         raise ValidationRapprochementError(
-            "Une transaction source liée à cette proposition est introuvable."
+            "Les dates ne respectent plus la fenêtre de la règle."
         )
 
-    # Empêcher le double rapprochement côté bancaire.
-    banque_deja_validee = (
-        TransactionBancaireRapprochee.objects.filter(
-            transaction=transaction_banque,
-            rapprochement__statut_validation=StatutValidation.VALIDE,
-        )
-        .exclude(rapprochement=rapprochement)
-        .exists()
-    )
-
-    if banque_deja_validee:
-        raise ValidationRapprochementError(
-            "Cette transaction bancaire est déjà rapprochée."
-        )
-
-    # Empêcher le double rapprochement côté Valorix.
-    valorix_deja_validee = (
-        TransactionValorixRapprochee.objects.filter(
-            transaction=transaction_valorix,
-            rapprochement__statut_validation=StatutValidation.VALIDE,
-        )
-        .exclude(rapprochement=rapprochement)
-        .exists()
-    )
-
-    if valorix_deja_validee:
-        raise ValidationRapprochementError(
-            "Cette transaction Valorix est déjà rapprochée."
-        )
-
-    regle = rapprochement.regle
-
-    if transaction_valorix.types != regle.type_transaction_valorix:
-        raise ValidationRapprochementError(
-            "Le type de transaction ne correspond plus à la règle associée."
-        )
-
-    # Revérifier la fenêtre de dates à partir des données sources.
-    date_valorix = transaction_valorix.date_transaction.date()
-    date_banque = transaction_banque.date_transaction
-
-    date_debut = date_valorix - timedelta(
-        days=regle.fenetre_jours_avant
-    )
-    date_fin = date_valorix + timedelta(
-        days=regle.fenetre_jours_apres
-    )
-
-    if not date_debut <= date_banque <= date_fin:
-        raise ValidationRapprochementError(
-            "Les dates ne respectent plus la fenêtre de rapprochement."
-        )
-
-    # Revérifier la tolérance de montant.
-    try:
-        montant_banque, sens_banque = obtenir_montant_et_sens(
-            transaction_banque
-        )
-        montant_valorix, sens_valorix = obtenir_montant_et_sens(
-            transaction_valorix
-        )
-    except ValidationError as exc:
-        raise ValidationRapprochementError(str(exc))
-
-    evaluation = evaluer_ecart(
-        montant_banque=montant_banque,
-        montant_valorix=montant_valorix,
-        tolerance_fixe=regle.tolerance_fixe,
-        tolerance_pourcentage=regle.tolerance_pourcentage,
-    )
-
+    evaluation = evaluer_ensemble(lignes_b, lignes_v, params)
     if not evaluation["acceptable"]:
         raise ValidationRapprochementError(
-            "L'écart de montant dépasse la tolérance autorisée."
+            f"L'écart de montant ({evaluation['ecart']}) dépasse la "
+            f"tolérance ({evaluation['tolerance']})."
         )
 
-    # Si une correspondance de sens a été configurée, la revérifier.
-    
-    sens_attendu = regle.sens_transaction_document_cible
-
-    if sens_banque != sens_attendu:
-        raise ValidationRapprochementError(
-            "Le sens bancaire doit être inverse du sens Valorix : "
-            "un débit Valorix doit correspondre à un crédit bancaire, "
-            "et un crédit Valorix à un débit bancaire."
-        )
-
-    # Les deux transactions sont maintenant considérées compatibles.
-    # Enregistrer la décision humaine.
     rapprochement.statut_validation = StatutValidation.VALIDE
     rapprochement.ecart_montant = evaluation["ecart"]
     rapprochement.valide_le = timezone.now()
-    #rapprochement.valide_par = utilisateur
-
+    if not rapprochement.regle_snapshot:
+        rapprochement.regle_snapshot = params.en_snapshot()
     rapprochement.save(
-        update_fields=[
-            "statut_validation",
-            "ecart_montant",
-            "valide_le",
-        ]
+        update_fields=["statut_validation", "ecart_montant", "valide_le", "regle_snapshot"]
     )
-
     return rapprochement

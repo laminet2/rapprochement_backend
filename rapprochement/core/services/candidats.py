@@ -1,15 +1,15 @@
-from django.utils import timezone
-from datetime import timedelta
+"""Comparaison de transactions (références, compte, nom) et évaluation d'un groupe."""
+
+import re
+import unicodedata
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
-from releverBancaire.models import TransactionBancaire
 from core.services.tolerance import evaluer_ecart
-import re
-import unicodedata
-
-
 
 
 def obtenir_montant_et_sens(transaction):
@@ -131,12 +131,24 @@ def numero_compte_correspond(transaction_valorix, transaction_banque):
     en respectant les limites numériques.
     """
     numero_compte = getattr(transaction_valorix, "numero_compte", None)
-    libelle = getattr(transaction_banque, "libelle_brut", None)
+    if not numero_compte:
+        return False
 
-    if not numero_compte or not libelle:
+    # Ligne de document : le numéro de compte est une colonne, on le compare.
+    if not hasattr(transaction_banque, "libelle_brut"):
+        autre = getattr(transaction_banque, "numero_compte", None)
+        return bool(autre) and _canonique(autre) == _canonique(numero_compte)
+
+    libelle = getattr(transaction_banque, "libelle_brut", None)
+    if not libelle:
         return False
 
     return contient_numero_exact(libelle, numero_compte)
+
+
+def _canonique(numero):
+    """Numéro de compte comparable : sans espaces ni zéros de tête."""
+    return re.sub(r"[^0-9A-Za-z]", "", str(numero)).lstrip("0").lower()
 
 
 def nom_client_correspond(transaction_valorix, transaction_banque):
@@ -214,124 +226,152 @@ def references_correspondent(transaction_valorix, transaction_banque):
     return bool(numeros_valorix & numeros_bancaires)
 
 
+# ------------------------------------------------------------------
+# Lignes normalisées (montant positif + sens + date)
+# ------------------------------------------------------------------
 
-def rechercher_candidats_bancaires(
-    transaction_valorix,
-    regle):
+@dataclass
+class Ligne:
+    tx: object
+    montant: Decimal
+    sens: str
+    date: date
+
+    @property
+    def id(self):
+        return self.tx.pk
+
+
+def _date_de(valeur):
+    if hasattr(valeur, "hour"):  # datetime
+        if timezone.is_aware(valeur):
+            valeur = timezone.localtime(valeur)
+        return valeur.date()
+    return valeur
+
+
+def construire_ligne(tx):
+    """Transaction -> Ligne, ou None si montant ambigu / nul."""
+    try:
+        montant, sens = obtenir_montant_et_sens(tx)
+    except ValidationError:
+        return None
+    return Ligne(tx=tx, montant=montant, sens=sens, date=_date_de(tx.date_transaction))
+
+
+def _a_une_reference(transaction_valorix):
+    texte = " ".join(
+        str(v)
+        for v in (
+            getattr(transaction_valorix, "references", None),
+            getattr(transaction_valorix, "references_rapprochement", None),
+        )
+        if v
+    )
+    return bool(re.search(r"\d", texte))
+
+
+def _a_un_nom_exploitable(transaction_valorix):
+    nom = normaliser_texte(getattr(transaction_valorix, "nomComplet", None))
+    mots = {m for m in re.findall(r"[A-Z]+", nom) if len(m) >= 2}
+    return len(mots) >= 2
+
+
+def _moyenne(valeurs):
+    valeurs = list(valeurs)
+    return Decimal(sum(1 for v in valeurs if v)) / Decimal(len(valeurs))
+
+
+def type_de_groupe(nb_banque, nb_valorix):
+    if nb_banque == 1 and nb_valorix == 1:
+        return "1-1"
+    if nb_banque == 1:
+        return "1-N"
+    if nb_valorix == 1:
+        return "N-1"
+    return "N-M"
+
+
+def evaluer_groupe(lignes_contrepartie, lignes_valorix, params):
     """
-    Recherche les transactions bancaires candidates pour une transaction
-    Valorix, selon la fenêtre de dates et la tolérance de la règle.
+    Évalue un rapprochement 1-1, 1-N ou N-1.
 
-    sens_banque_par_type est un dictionnaire facultatif, par exemple :
-        {
-            "DEPOT_CHEQUE": "CREDIT",
-            "RETRAIT_CHEQUE": "DEBIT",
-        }
-
-    Ces correspondances doivent être confirmées selon le fonctionnement
-    comptable réel du projet.
-
-    Retourne une liste de dictionnaires. Ne crée aucun rapprochement.
+    Retourne un dictionnaire « candidat » (compatible avec le scoring) ou
+    None si le groupe ne respecte pas la règle : sens bancaire, fenêtre de
+    dates (pour chaque paire) ou tolérance sur la SOMME des montants.
     """
+    nb, nv = len(lignes_contrepartie), len(lignes_valorix)
+    if nb == 0 or nv == 0 or (nb > 1 and nv > 1):
+        return None
 
-    if transaction_valorix.types != regle.type_transaction_valorix:
-        return []
+    cible = params.sens_transaction_document_cible
+    if any(l.sens != cible for l in lignes_contrepartie):
+        return None
 
-    date_valorix = transaction_valorix.date_transaction.date()
+    total_contrepartie = sum((l.montant for l in lignes_contrepartie), Decimal(0))
+    total_valorix = sum((l.montant for l in lignes_valorix), Decimal(0))
 
-    date_debut = date_valorix - timedelta(
-        days=regle.fenetre_jours_avant
+    evaluation = evaluer_ecart(
+        montant_banque=total_contrepartie,
+        montant_valorix=total_valorix,
+        tolerance_fixe=params.tolerance_fixe,
+        tolerance_pourcentage=params.tolerance_pourcentage,
     )
-    date_fin = date_valorix + timedelta(
-        days=regle.fenetre_jours_apres
-    )
+    if not evaluation["acceptable"]:
+        return None
 
-    montant_valorix, sens_valorix = obtenir_montant_et_sens(
-        transaction_valorix
-    )
+    ecarts_jours = []
+    for b in lignes_contrepartie:
+        for v in lignes_valorix:
+            ecart = (b.date - v.date).days
+            if ecart < -params.fenetre_jours_avant or ecart > params.fenetre_jours_apres:
+                return None
+            ecarts_jours.append(ecart)
 
-   
-    sens_document_cible_attendu = regle.sens_transaction_document_cible
+    if nb == 1:
+        paires = [(lignes_contrepartie[0], v) for v in lignes_valorix]
+    else:
+        paires = [(b, lignes_valorix[0]) for b in lignes_contrepartie]
 
-    if sens_document_cible_attendu not in (None, "DEBIT", "CREDIT"):
-        raise ValueError(
-            "Le sens du document cible attendu doit être DEBIT, CREDIT ou None."
-        )
+    sens_valorix = {l.sens for l in lignes_valorix}
 
-    transactions_bancaires = TransactionBancaire.objects.filter(
-        date_transaction__range=(date_debut, date_fin),
-    ).select_related("compte", "compte__banque")
-
-    if not regle.prendre_banque_anciennes:
-        aujourd_hui = timezone.localdate()
-        transactions_bancaires = transactions_bancaires.filter(
-            created_at__date=aujourd_hui
-        )
-
-    candidats = []
-
-    for transaction_banque in transactions_bancaires:
-        try:
-            montant_banque, sens_banque = obtenir_montant_et_sens(
-                transaction_banque
-            )
-        except ValidationError:
-            # Une ligne ambiguë ou sans montant ne peut pas être proposée.
-            continue
-
-        if (
-            sens_banque != sens_document_cible_attendu
-        ):
-            continue
-
-        evaluation = evaluer_ecart(
-            montant_banque=montant_banque,
-            montant_valorix=montant_valorix,
-            tolerance_fixe=regle.tolerance_fixe,
-            tolerance_pourcentage=regle.tolerance_pourcentage,
-        )
-
-        if not evaluation["acceptable"]:
-            continue
-
-        candidats.append({
-            "transaction_bancaire": transaction_banque,
-            "montant_banque": montant_banque,
-            "montant_valorix": montant_valorix,
-            "sens_banque": sens_banque,
-            "sens_valorix": sens_valorix,
-            "sens_verifie": sens_document_cible_attendu is not None,
-            "ecart_montant": evaluation["ecart"],
-            "tolerance": evaluation["tolerance"],
-            "reference_correspond": references_correspondent(
-                transaction_valorix,
-                transaction_banque,
-            ),
-            "ecart_jours": (
-                transaction_banque.date_transaction - date_valorix
-            ).days,
-            "numero_cheque_correspond": numero_cheque_correspond(
-                transaction_valorix,
-                transaction_banque,
-            ),
-            "compte_correspond": numero_compte_correspond(
-                transaction_valorix,
-                transaction_banque,
-            ),
-            "nom_correspond": nom_client_correspond(
-                transaction_valorix,
-                transaction_banque,
-            ),
-        })
-
-    # On affiche d'abord les écarts les plus faibles,
-    # puis les dates les plus proches, puis les références correspondantes.
-    candidats.sort(
-        key=lambda candidat: (
-            candidat["ecart_montant"],
-            abs(candidat["ecart_jours"]),
-            not candidat["reference_correspond"],
-        )
-    )
-
-    return candidats
+    return {
+        "type_rapprochement": type_de_groupe(nb, nv),
+        "lignes_contrepartie": lignes_contrepartie,
+        "lignes_valorix": lignes_valorix,
+        "montant_contrepartie": total_contrepartie,
+        "montant_valorix": total_valorix,
+        "sens_banque": cible,
+        "sens_valorix": next(iter(sens_valorix)) if len(sens_valorix) == 1 else None,
+        "ecart_montant": evaluation["ecart"],
+        "tolerance": evaluation["tolerance"],
+        "ecarts_jours": ecarts_jours,
+        "ecart_jours": ecarts_jours[0] if len(ecarts_jours) == 1
+        else round(sum(ecarts_jours) / len(ecarts_jours)),
+        # Un document n'a ni libellé ni référence ni nom : seul le compte compte.
+        "reference_correspond": _moyenne(
+            (not params.est_document) and references_correspondent(v.tx, b.tx)
+            for b, v in paires
+        ),
+        "numero_cheque_correspond": _moyenne(
+            (not params.est_document) and numero_cheque_correspond(v.tx, b.tx)
+            for b, v in paires
+        ),
+        "compte_correspond": _moyenne(
+            numero_compte_correspond(v.tx, b.tx) for b, v in paires
+        ),
+        "nom_correspond": _moyenne(
+            (not params.est_document) and nom_client_correspond(v.tx, b.tx)
+            for b, v in paires
+        ),
+        "sens_correct": _moyenne(l.sens != cible for l in lignes_valorix),
+        "reference_disponible": (
+            not params.est_document and any(_a_une_reference(v.tx) for v in lignes_valorix)
+        ),
+        "compte_disponible": any(
+            (getattr(v.tx, "numero_compte", "") or "").strip() for v in lignes_valorix
+        ),
+        "nom_disponible": (
+            not params.est_document and any(_a_un_nom_exploitable(v.tx) for v in lignes_valorix)
+        ),
+    }

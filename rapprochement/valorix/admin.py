@@ -1,7 +1,10 @@
 from django.contrib import admin
-from .models import TransactionValorix
 
-# Register your models here.
+from valorix.models import TransactionValorix
+
+
 @admin.register(TransactionValorix)
 class TransactionValorixAdmin(admin.ModelAdmin):
-    list_display = [field.name for field in TransactionValorix._meta.fields]
+    list_display = [f.name for f in TransactionValorix._meta.fields]
+    list_filter = ("types",)
+    search_fields = ("numero_compte", "nomComplet", "references", "numero_transaction")

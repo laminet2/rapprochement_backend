@@ -16,7 +16,7 @@ class TypeTransactionCaisse(models.TextChoices):
 class TransactionValorix(models.Model):
     id=models.UUIDField(primary_key=True,default=uuid.uuid4)
     numero_transaction=models.CharField()
-    date_transaction=models.DateTimeField(auto_now=False, auto_now_add=False)
+    date_transaction=models.DateTimeField(auto_now=False, auto_now_add=False, db_index=True)
     numero_compte = models.CharField(max_length = 150)
     nomComplet=models.CharField(max_length=255)
 
@@ -43,4 +43,16 @@ class TransactionValorix(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    lot = models.ForeignKey(
+        "importation.LotImport",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions_valorix",
+    )
 
+    class Meta:
+        ordering = ["-date_transaction"]
+
+    def __str__(self):
+        return f"{self.numero_transaction} - {self.nomComplet}"

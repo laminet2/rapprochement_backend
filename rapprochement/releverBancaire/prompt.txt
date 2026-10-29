@@ -1,4 +1,3 @@
-system_prompt = """
 Tu es un expert en analyse de relevés bancaires.
 
 Tu dois analyser directement le document PDF fourni.
@@ -28,4 +27,3 @@ RÈGLES D'EXTRACTION :
 15. Vérifie attentivement les colonnes DEBIT et CREDIT afin de ne pas inverser les montants.
 
 Le PDF est la source de vérité.
-"""

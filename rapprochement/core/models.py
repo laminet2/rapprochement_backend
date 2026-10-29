@@ -26,6 +26,14 @@ class ResultatMatching(models.TextChoices):
 
 
 class RegleMatching(models.Model):
+    """
+    Règle de rapprochement : UNE règle par type de transaction Valorix.
+
+    Elle est appliquée à la génération des propositions ; ses paramètres
+    sont recopiés dans chaque proposition (``Rapprochement.regle_snapshot``)
+    pour que la validation reste cohérente même si la règle change ensuite.
+    """
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -37,10 +45,20 @@ class RegleMatching(models.Model):
         choices=TypeTransactionCaisse.choices,
     )
 
-    sens_transaction_document_cible=models.CharField(
+    # Contrepartie visée : un type de document, ou NULL pour le relevé bancaire.
+    type_document = models.ForeignKey(
+        "documents.TypeDocument",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="regles",
+    )
+
+    # Sens attendu côté banque (le sens Valorix correspondant est l'inverse).
+    sens_transaction_document_cible = models.CharField(
         max_length=40,
         choices=sens_transactions.choices,
-        default=sens_transactions.CREDIT
+        default=sens_transactions.CREDIT,
     )
 
     fenetre_jours_avant = models.PositiveSmallIntegerField(default=2)
@@ -50,7 +68,7 @@ class RegleMatching(models.Model):
         max_digits=18,
         decimal_places=2,
         default=0,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
     )
 
     # Exemple : 1.5 signifie 1,5 %
@@ -58,22 +76,46 @@ class RegleMatching(models.Model):
         max_digits=7,
         decimal_places=4,
         default=0,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(0)],
     )
+
+    # Nombre maximal de transactions regroupées dans un rapprochement
+    # automatique 1-N / N-1. 1 = uniquement des rapprochements 1-1.
+    regroupement_max = models.PositiveSmallIntegerField(
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(20)],
+    )
+
+    actif = models.BooleanField(default=True)
 
     date_creation = models.DateTimeField(auto_now_add=True)
-    
-    prendre_valorix_anciennes = models.BooleanField(default=True)
-    prendre_banque_anciennes = models.BooleanField(default=True)   
-
-    types_valorix_ignorer=models.JSONField(
-        default=list, 
-        blank=True,
-    )
 
     class Meta:
         verbose_name = "Règle de rapprochement"
         verbose_name_plural = "Règles de rapprochement"
+        ordering = ["type_document__nom", "type_transaction_valorix"]
+        constraints = [
+            # Une règle par type Valorix et par contrepartie.
+            models.UniqueConstraint(
+                fields=["type_transaction_valorix"],
+                condition=models.Q(type_document__isnull=True),
+                name="uniq_regle_banque_par_type",
+            ),
+            models.UniqueConstraint(
+                fields=["type_transaction_valorix", "type_document"],
+                condition=models.Q(type_document__isnull=False),
+                name="uniq_regle_document_par_type",
+            ),
+        ]
+
+    def __str__(self):
+        source = self.type_document.nom if self.type_document_id else "Banque"
+        return f"Règle {self.type_transaction_valorix} ↔ {source}"
+
+
+class OrigineRapprochement(models.TextChoices):
+    AUTO = "AUTO", "Automatique"
+    MANUEL = "MANUEL", "Manuel"
 
 
 class Rapprochement(models.Model):
@@ -115,6 +157,26 @@ class Rapprochement(models.Model):
 
 
     commentaire = models.TextField(blank=True)
+
+    # Contrepartie des lignes Valorix : NULL = relevé bancaire, sinon un type de document.
+    type_document = models.ForeignKey(
+        "documents.TypeDocument",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rapprochements",
+    )
+
+    origine = models.CharField(
+        max_length=10,
+        choices=OrigineRapprochement.choices,
+        default=OrigineRapprochement.AUTO,
+        db_index=True,
+    )
+
+    # Paramètres de la règle au moment de la génération (fenêtre, tolérance,
+    # sens attendu...) : la validation s'appuie dessus.
+    regle_snapshot = models.JSONField(default=dict, blank=True)
 
     cree_le = models.DateTimeField(auto_now_add=True, db_index=True)
     valide_le = models.DateTimeField(null=True, blank=True)
@@ -175,6 +237,31 @@ class TransactionValorixRapprochee(models.Model):
             models.UniqueConstraint(
                 fields=["rapprochement", "transaction"],
                 name="uniq_valorix_par_rapprochement",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.transaction_id} -> {self.rapprochement_id}"
+
+
+class LigneDocumentRapprochee(models.Model):
+    rapprochement = models.ForeignKey(
+        Rapprochement,
+        on_delete=models.CASCADE,
+        related_name="lignes_document",
+    )
+
+    transaction = models.ForeignKey(
+        "documents.LigneDocument",
+        on_delete=models.PROTECT,
+        related_name="liens_rapprochement",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["rapprochement", "transaction"],
+                name="uniq_document_par_rapprochement",
             ),
         ]
 

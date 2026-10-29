@@ -64,7 +64,7 @@ class TransactionBancaire(models.Model):
         related_name="transactions",
     )
 
-    date_transaction = models.DateField()
+    date_transaction = models.DateField(db_index=True)
     date_valeur = models.DateField(null=True, blank=True)
 
     reference_rapprochement = models.CharField(
@@ -102,3 +102,17 @@ class TransactionBancaire(models.Model):
             default=TypeTransactionBancaire.AUTRE,
         )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    lot = models.ForeignKey(
+        "importation.LotImport",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions_bancaires",
+    )
+
+    class Meta:
+        ordering = ["-date_transaction", "-id"]
+
+    def __str__(self):
+        return f"{self.date_transaction} - {self.libelle_brut[:40]}"
